@@ -1,0 +1,20 @@
+# --- GİZLİLİK: gerçek IP / hostname / e-posta içerir, ASLA commit etme ---
+.anonim_ajan.json
+anonim-defteri*.json
+*.log
+
+# --- PyInstaller çıktıları (exe'yi GitHub Releases'a yükle, depoya değil) ---
+build/
+dist/
+*.spec
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- İşletim sistemi ---
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Log Anonimleştirici — AI'a göndermeden önce maskele</title>
+<style>
+  :root{
+    --ink:#0d1117;
+    --panel:#151b23;
+    --panel-2:#1b232d;
+    --line:#2a3542;
+    --line-soft:#212a34;
+    --text:#c9d4e0;
+    --text-dim:#7d8b9c;
+    --text-faint:#556072;
+    --real:#f2596a;      /* gerçek / hassas  */
+    --real-bg:rgba(242,89,106,.12);
+    --safe:#43c46a;      /* maskelenmiş / güvenli */
+    --safe-bg:rgba(67,196,106,.12);
+    --act:#4fb3d9;       /* eylem / marka */
+    --act-2:#63d6ff;
+    --amber:#e3b341;
+    --radius:10px;
+    --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono","Fira Code",Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:
+      radial-gradient(1200px 600px at 80% -10%,rgba(79,179,217,.06),transparent 60%),
+      var(--ink);
+    color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 22px 80px}
+
+  /* ---------- header ---------- */
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;flex-wrap:wrap;
+    padding-bottom:20px;border-bottom:1px solid var(--line-soft);margin-bottom:24px}
+  .brand{display:flex;align-items:center;gap:13px}
+  .logo{width:40px;height:40px;border-radius:9px;flex:none;position:relative;
+    background:linear-gradient(150deg,#1d2833,#0f151c);border:1px solid var(--line);
+    display:grid;place-items:center}
+  .logo::before{content:"";width:15px;height:11px;border:2px solid var(--act);border-radius:2px;
+    box-shadow:0 6px 0 -4px var(--act)}
+  .logo::after{content:"";position:absolute;width:7px;height:7px;border-radius:50%;
+    border:2px solid var(--act-2);top:9px}
+  h1{font-size:19px;margin:0;letter-spacing:-.2px;font-weight:650}
+  .sub{color:var(--text-dim);font-size:13px;margin-top:2px}
+  .offline{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--safe);
+    background:var(--safe-bg);border:1px solid rgba(67,196,106,.28);padding:7px 12px;border-radius:99px;
+    font-family:var(--mono)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--safe);box-shadow:0 0 0 0 rgba(67,196,106,.5);
+    animation:pulse 2.6s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(67,196,106,.45)}70%{box-shadow:0 0 0 6px rgba(67,196,106,0)}100%{box-shadow:0 0 0 0 rgba(67,196,106,0)}}
+
+  /* ---------- status bar ---------- */
+  .status{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:22px;
+    font-family:var(--mono);font-size:12.5px;color:var(--text-dim)}
+  .status b{color:var(--text)}
+  .status .chip{padding:3px 9px;border-radius:6px;border:1px solid var(--line);background:var(--panel)}
+  .status .safe{color:var(--safe);border-color:rgba(67,196,106,.3)}
+  .status .warn{color:var(--real);border-color:rgba(242,89,106,.3)}
+
+  /* ---------- layout ---------- */
+  .grid{display:grid;grid-template-columns:1fr 380px;gap:20px;align-items:start}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  .phead{display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:13px 16px;border-bottom:1px solid var(--line-soft);background:var(--panel-2)}
+  .phead .t{display:flex;align-items:center;gap:9px;font-weight:600;font-size:13.5px}
+  .num{width:20px;height:20px;border-radius:5px;background:var(--ink);border:1px solid var(--line);
+    display:grid;place-items:center;font-family:var(--mono);font-size:11px;color:var(--act-2);flex:none}
+  .pbody{padding:16px}
+  .hint{font-size:12.5px;color:var(--text-faint);margin:0 0 12px}
+
+  textarea{width:100%;min-height:190px;resize:vertical;background:var(--ink);color:var(--text);
+    border:1px solid var(--line);border-radius:8px;padding:12px 13px;font-family:var(--mono);
+    font-size:13px;line-height:1.6;outline:none}
+  textarea:focus{border-color:var(--act);box-shadow:0 0 0 3px rgba(79,179,217,.12)}
+  textarea::placeholder{color:var(--text-faint)}
+
+  /* toggles */
+  .toggles{display:flex;flex-wrap:wrap;gap:8px;margin:13px 0 4px}
+  .tog{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;
+    padding:6px 10px;border:1px solid var(--line);border-radius:7px;background:var(--panel-2);
+    cursor:pointer;user-select:none;color:var(--text-dim);transition:.12s}
+  .tog:hover{border-color:var(--act);transform:translateY(-1px)}
+  .tog input{appearance:none;width:13px;height:13px;border:1.5px solid var(--text-faint);border-radius:3px;
+    margin:0;position:relative;cursor:pointer;transition:.12s}
+  .tog input:checked{background:var(--act);border-color:var(--act)}
+  .tog input:checked::after{content:"";position:absolute;left:3.5px;top:1px;width:3px;height:6px;
+    border:solid var(--ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .tog:has(input:checked){color:var(--text);border-color:rgba(79,179,217,.4);background:rgba(79,179,217,.08)}
+
+  .custom-in{width:100%;margin-top:11px;background:var(--ink);color:var(--text);border:1px solid var(--line);
+    border-radius:7px;padding:9px 11px;font-family:var(--mono);font-size:12.5px;outline:none}
+  .custom-in:focus{border-color:var(--act)}
+
+  .row{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}
+  button{font-family:var(--sans);font-size:13.5px;font-weight:600;border-radius:8px;padding:10px 16px;
+    cursor:pointer;border:1px solid var(--line);background:var(--panel-2);color:var(--text);
+    transition:transform .12s ease,background .15s ease,border-color .15s ease,box-shadow .15s ease,color .15s ease}
+  button:hover{border-color:var(--act);color:#fff;transform:translateY(-1px)}
+  button:active{transform:translateY(0)}
+  button:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none}
+  .primary{background:linear-gradient(180deg,#57c0e8,#3f9fc4);border-color:#57c0e8;color:#08222d;
+    box-shadow:0 4px 14px rgba(79,179,217,.22)}
+  .primary:hover{color:#04161d;filter:brightness(1.05);box-shadow:0 7px 22px rgba(79,179,217,.34)}
+  .ghost{background:transparent}
+  .clear{background:transparent;color:var(--text-faint);border-color:var(--line-soft)}
+  .clear:hover{color:var(--real);border-color:var(--real)}
+
+  /* output preview */
+  .out{margin-top:16px}
+  .out-label{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .out-label .l{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint)}
+  pre.render{margin:0;background:var(--ink);border:1px solid var(--line);border-radius:8px;padding:13px;
+    font-family:var(--mono);font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;
+    max-height:340px;overflow:auto;min-height:60px;transition:border-color .2s ease}
+  pre.render:empty::before{content:"Sonuç burada görünecek.";color:var(--text-faint)}
+  pre.render.bump{animation:bump .45s cubic-bezier(.2,.7,.3,1)}
+  @keyframes bump{0%{opacity:.25;transform:translateY(4px);border-color:var(--act)}100%{opacity:1;transform:none}}
+  mark.m{background:var(--safe-bg);color:var(--safe);border-radius:4px;padding:0 3px;
+    border:1px solid rgba(67,196,106,.3)}
+  mark.r{background:var(--real-bg);color:var(--real);border-radius:4px;padding:0 3px;
+    border:1px solid rgba(242,89,106,.3)}
+
+  /* ledger */
+  .ledger{position:sticky;top:18px}
+  .ledger .pbody{padding:0}
+  .led-tools{display:flex;gap:7px;padding:12px 14px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+  .led-tools button{padding:6px 10px;font-size:12px}
+  .led-scroll{max-height:520px;overflow:auto}
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+  thead th{position:sticky;top:0;background:var(--panel-2);text-align:left;padding:8px 12px;
+    color:var(--text-faint);font-weight:500;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;
+    border-bottom:1px solid var(--line-soft);z-index:1}
+  tbody td{padding:8px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top;word-break:break-all}
+  tbody tr:hover{background:var(--panel-2)}
+  .tag{display:inline-block;font-size:9.5px;letter-spacing:.04em;padding:2px 6px;border-radius:5px;
+    border:1px solid var(--line);color:var(--text-dim);text-transform:uppercase}
+  .c-real{color:var(--real)}
+  .c-fake{color:var(--safe)}
+  .arrow{color:var(--text-faint);padding:0 2px}
+  .empty{padding:34px 20px;text-align:center;color:var(--text-faint);font-size:13px;font-family:var(--sans)}
+
+  .footnote{margin-top:26px;font-size:12px;color:var(--text-faint);line-height:1.7;
+    border-top:1px solid var(--line-soft);padding-top:16px}
+  .footnote code{font-family:var(--mono);background:var(--panel);padding:1px 5px;border-radius:4px;
+    border:1px solid var(--line-soft);color:var(--text-dim)}
+
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
+    background:var(--panel-2);border:1px solid var(--act);color:var(--text);padding:10px 18px;border-radius:9px;
+    font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:50;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  :focus-visible{outline:2px solid var(--act-2);outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="logo" aria-hidden="true"></div>
+      <div>
+        <h1>Log Anonimleştirici</h1>
+        <div class="sub">IP, DNS, e-posta ve hostname'leri maskele — AI'a gönder — cevabı geri çevir.</div>
+      </div>
+    </div>
+    <div class="offline"><span class="dot"></span> Tamamen tarayıcıda çalışır · veri dışarı çıkmaz</div>
+  </header>
+
+  <div class="status" id="status">
+    <span>Durum:</span>
+    <span class="chip" id="stCount">0 öğe maskelendi</span>
+    <span class="chip" id="stSafe">gönderime hazır değil</span>
+    <span style="color:var(--text-faint)">Eşleşmeler bu oturumda saklanır — geri çevirmek için defteri dışa aktar.</span>
+  </div>
+
+  <div class="grid">
+
+    <!-- SOL: giden + gelen -->
+    <div>
+      <!-- GIDEN -->
+      <section class="panel" style="margin-bottom:20px">
+        <div class="phead">
+          <div class="t"><span class="num">1</span> Giden — AI'a gidecek metin</div>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--real)">GERÇEK VERİ</span>
+        </div>
+        <div class="pbody">
+          <p class="hint">Log, config, hata çıktısı — hassas metni buraya yapıştır. Aşağıdan neyin tespit edileceğini seçebilirsin.</p>
+          <textarea id="src" placeholder="Örn:
+server01  10.10.10.20   dns: x.fatih.com
+gateway   192.168.1.1
+admin@fatih.com  MAC 00:1B:44:11:3A:B7
+web02.fatih.com -> 172.16.5.9"></textarea>
+
+          <div class="toggles" id="toggles">
+            <label class="tog"><input type="checkbox" data-t="ipv4" checked> IPv4</label>
+            <label class="tog"><input type="checkbox" data-t="ipv6" checked> IPv6</label>
+            <label class="tog"><input type="checkbox" data-t="domain" checked> DNS / domain</label>
+            <label class="tog"><input type="checkbox" data-t="email" checked> E-posta</label>
+            <label class="tog"><input type="checkbox" data-t="mac" checked> MAC</label>
+            <label class="tog"><input type="checkbox" data-t="hostname" checked> Hostname</label>
+            <label class="tog"><input type="checkbox" data-t="config" checked> Config değerleri</label>
+            <label class="tog"><input type="checkbox" data-t="custom" checked> Özel terimler</label>
+          </div>
+          <input class="custom-in" id="customTerms" placeholder="Özel terimler (virgülle): server01, ACME A.Ş., k.dagdelen">
+
+          <div class="row">
+            <button class="primary" id="btnMask">Anonimleştir</button>
+            <button class="ghost" id="btnCopyMasked" disabled>Maskeli metni kopyala</button>
+            <button class="clear" id="btnClearIn">Temizle</button>
+          </div>
+
+          <div class="out">
+            <div class="out-label">
+              <span class="l">Maskeli çıktı — bunu AI'a gönder</span>
+              <span style="font-family:var(--mono);font-size:11px;color:var(--safe)">GÜVENLİ</span>
+            </div>
+            <pre class="render" id="masked" aria-live="polite"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- GELEN -->
+      <section class="panel">
+        <div class="phead">
+          <div class="t"><span class="num">2</span> Gelen — AI'ın cevabını geri çevir</div>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--safe)">GÜVENLİ VERİ</span>
+        </div>
+        <div class="pbody">
+          <p class="hint">AI'ın verdiği cevabı (maskeli değerlerle) buraya yapıştır. Sahte değerler tekrar gerçekleriyle değiştirilir.</p>
+          <textarea id="reply" placeholder="AI'ın cevabını buraya yapıştır — örn. 'srv1.dagdelen.net sunucusunda 192.168.23.22 adresini kontrol et...'"></textarea>
+          <div class="row">
+            <button class="primary" id="btnRestore">Geri çevir</button>
+            <button class="ghost" id="btnCopyRestored" disabled>Sonucu kopyala</button>
+            <button class="clear" id="btnClearReply">Temizle</button>
+          </div>
+          <div class="out">
+            <div class="out-label">
+              <span class="l">Geri çevrilmiş cevap</span>
+              <span style="font-family:var(--mono);font-size:11px;color:var(--real)">GERÇEK</span>
+            </div>
+            <pre class="render" id="restored" aria-live="polite"></pre>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- SAG: eşleştirme defteri -->
+    <aside class="panel ledger">
+      <div class="phead">
+        <div class="t"><span class="num">↔</span> Eşleştirme defteri</div>
+        <span id="ledCount" style="font-family:var(--mono);font-size:11px;color:var(--text-dim)">0</span>
+      </div>
+      <div class="pbody">
+        <div class="led-tools">
+          <button class="ghost" id="btnExport">Dışa aktar (.json)</button>
+          <button class="ghost" id="btnImport">İçe aktar</button>
+          <button class="ghost" id="btnReset">Sıfırla</button>
+          <input type="file" id="fileImport" accept="application/json" hidden>
+        </div>
+        <div class="led-scroll">
+          <table>
+            <thead><tr><th>Tür</th><th style="color:var(--real)">Gerçek</th><th style="color:var(--safe)">Sahte</th></tr></thead>
+            <tbody id="ledBody"></tbody>
+          </table>
+          <div class="empty" id="ledEmpty">Henüz eşleşme yok.<br>Sol tarafa metin yapıştırıp <b>Anonimleştir</b>'e bas.</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <p class="footnote">
+    <b>Nasıl çalışır:</b> Aynı gerçek değer her zaman aynı sahteye eşlenir; <code>x.fatih.com</code> ile <code>y.fatih.com</code> aynı sahte kök domaine düşer, böylece AI ilişkileri koruyup mantık kurabilir.
+    Geri çevirme sahte→gerçek eşleşmesini kullanır — <b>yeni bir oturumda geri çevireceksen defteri dışa aktar</b>, çünkü eşleşmeler yalnızca bu sekmede tutulur.
+    <b>Hostname:</b> <code>server01</code>, <code>web02</code>, <code>db-prod-01</code> gibi rakam içeren isimler otomatik yakalanır ve bare <code>server01</code> ile <code>server01.fatih.com</code> içindeki etiket aynı sahteye eşlenir. <code>hostname:</code> / <code>Host =</code> / <code>CN=</code> satırlarındaki rakamsız isimler de yakalanır; bunun dışındaki rakamsız isimleri “Özel terimler” alanına ekle. Tespit sezgiseldir — göndermeden önce defteri gözden geçir.
+    <br><b>Config değerleri:</b> <code>datasource jboss</code>, <code>database name: appdb</code>, <code>schema=mySchema</code>, <code>jndi ...</code> gibi anahtar→değer içeriklerindeki değer yakalanır ve metnin her yerinde tutarlı şekilde maskelenir. IP artık <code>ada_192.168.22.22</code> gibi string'e gömülü olsa da yakalanır.
+  </p>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+(function(){
+  // ---------- durum ----------
+  const entries = [];                 // {real, fake, type}
+  const realToFake = new Map();       // real -> fake
+  const usedFakes = new Set();        // sahte çakışmasını önle
+  const baseMap = new Map();          // gerçek kök domain -> sahte kök domain
+  const labelMap = new Map();         // gerçek subdomain etiketi -> sahte etiket
+  let usedBases = new Set(), usedLabels = new Set();
+
+  // ---------- sahte değer havuzları ----------
+  const FAKE_TLDS = ["net","org","io","com","dev","cloud","systems","co","tech","net.tr"];
+  const FAKE_NAMES = ["dagdelen","meridyen","cinar","poyraz","tulpar","boruk","yildizlar",
+    "korelasyon","efrasiya","tuncbilek","kayra","orionteknik","levantis","zumrut","karadeniz",
+    "batuhan","serdivan","sedefli","argos","yelkovan","nirvana","ozanteknoloji","paravel"];
+  const FAKE_LABELS = ["srv","node","gw","host","edge","core","app","db","web","vm","proxy","relay",
+    "cache","auth","mail","ns","dc","lb","api","svc"];
+
+  const rInt = n => Math.floor(Math.random()*n);
+  const pick = arr => arr[rInt(arr.length)];
+
+  // benzersiz sahte üretici, çakışırsa yeniden dener
+  function unique(genFn, seen){
+    for(let i=0;i<400;i++){ const v = genFn(); if(!seen.has(v) && !usedFakes.has(v)){ return v; } }
+    // son çare: sayaç ekle
+    let base = genFn(), n=2, v=base;
+    while(seen.has(v)||usedFakes.has(v)){ v = base + n++; }
+    return v;
+  }
+
+  function fakeIPv4(){
+    // makul görünen özel/altyapı IP'leri
+    const heads = [
+      ()=>`10.${rInt(255)}.${rInt(255)}.${1+rInt(254)}`,
+      ()=>`192.168.${rInt(255)}.${1+rInt(254)}`,
+      ()=>`172.${16+rInt(16)}.${rInt(255)}.${1+rInt(254)}`,
+    ];
+    return unique(()=>pick(heads)(), usedFakes);
+  }
+  function hex(n){ return Array.from({length:n},()=>rInt(16).toString(16)).join(""); }
+  function fakeIPv6(){
+    return unique(()=>Array.from({length:8},()=>hex(4)).join(":").replace(/(^|:)0{1,3}/g,"$1"), usedFakes);
+  }
+  function fakeMac(){
+    return unique(()=>Array.from({length:6},()=>hex(2)).join(":").toUpperCase(), usedFakes);
+  }
+  function fakeConfig(){
+    return unique(()=>`${pick(["ds","db","schema","pool","svc","app","cat","cfg"])}${10+rInt(90)}`, usedFakes);
+  }
+  function fakeBase(realBase){
+    if(baseMap.has(realBase)) return baseMap.get(realBase);
+    const v = unique(()=>`${pick(FAKE_NAMES)}.${pick(FAKE_TLDS)}`, usedBases);
+    baseMap.set(realBase,v); usedBases.add(v); return v;
+  }
+  function fakeLabel(realLabel){
+    if(labelMap.has(realLabel)) return labelMap.get(realLabel);
+    const v = unique(()=>`${pick(FAKE_LABELS)}${1+rInt(9)}`, usedLabels);
+    labelMap.set(realLabel,v); usedLabels.add(v); return v;
+  }
+  function fakeDomain(d){
+    const labels = d.split(".");
+    if(labels.length < 2) return d;
+    const base = labels.slice(-2).join(".");
+    const subs = labels.slice(0,-2);
+    const fb = fakeBase(base);
+    const fs = subs.map(fakeLabel);
+    return [...fs, fb].join(".");
+  }
+  function fakeEmail(e){
+    const at = e.indexOf("@");
+    const local = e.slice(0,at), dom = e.slice(at+1);
+    const fLocal = unique(()=>`${pick(FAKE_LABELS)}${1+rInt(99)}`, usedFakes);
+    const fDom = registerDomain(dom); // e-posta domaini de deftere düşsün
+    return `${fLocal}@${fDom}`;
+  }
+
+  // deftere kaydet (varsa mevcut sahteyi döndür)
+  function register(real, type, genFn){
+    if(realToFake.has(real)) return realToFake.get(real);
+    const fake = genFn(real);
+    realToFake.set(real, fake); usedFakes.add(fake);
+    entries.push({real, fake, type});
+    return fake;
+  }
+  function registerDomain(d){ return register(d,"domain",fakeDomain); }
+
+  function getFake(value, type){
+    switch(type){
+      case "ipv4":   return register(value,type,fakeIPv4);
+      case "ipv6":   return register(value,type,fakeIPv6);
+      case "mac":    return register(value,type,fakeMac);
+      case "hostname": return register(value,type,fakeLabel);
+      case "config": return register(value,type,fakeConfig);
+      case "email":  return register(value,type,fakeEmail);
+      case "domain": return register(value,type,fakeDomain);
+      case "custom": return register(value,type,()=>unique(()=>`OZEL_${(1000+rInt(9000))}`, usedFakes));
+    }
+  }
+
+  // ---------- desenler ----------
+  // sınır olarak \b yerine lookaround: IP/MAC harf veya _ ile bitişik olsa da yakalanır
+  // (ör. "ada_192.168.22.22"), ama daha uzun bir sayı/adresin parçasıysa yakalanmaz.
+  const PAT = {
+    ipv4:  /(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?![\d.])/g,
+    ipv6:  /(?<![0-9A-Fa-f:])(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}|:(?:(?::[0-9A-Fa-f]{1,4}){1,7}|:))(?![0-9A-Fa-f:])/g,
+    email: /(?<![A-Za-z0-9._%+\-])[A-Za-z0-9._%+\-]+@(?:[A-Za-z0-9\-]+\.)+[A-Za-z]{2,}(?![A-Za-z0-9\-])/g,
+    domain:/(?<![A-Za-z0-9.@\-])(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}(?![A-Za-z0-9\-])/g,
+    mac:   /(?<![0-9A-Fa-f:\-])(?:[0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f:\-])/g,
+  };
+  // öncelik: özel > e-posta > domain > ipv6 > ipv4 > mac > hostname > config  (çakışmada büyük kazanır)
+  const PRIO = {custom:6, email:5, domain:4, ipv6:3, ipv4:2, mac:1, hostname:0.5, config:0};
+
+  const esc = s => s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  const rx = t => t.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+
+  // ---------- hostname tespiti ----------
+  // hash / mimari / protokol gibi rakam içeren teknik jetonları hostname sanmayı önler
+  const HOST_BLOCK=new Set(["md5","md2","sha1","sha2","sha3","sha224","sha256","sha384","sha512",
+    "crc32","adler32","base64","base32","utf8","utf16","utf32","latin1","iso88591","x8664","amd64",
+    "arm64","win32","win64","http2","http3","tls10","tls11","tls12","tls13","ssl2","ssl3","ipv4",
+    "ipv6","oauth2","ec2","s3","k8s","i18n","l10n","a11y","p2p","log4j","ext4","fat32","ntfs","rfc822"]);
+
+  function looksLikeHost(tok){
+    if(tok.length<3 || tok.length>63) return false;
+    if(!/\d/.test(tok)) return false;                     // en az bir rakam içermeli
+    if(HOST_BLOCK.has(tok.toLowerCase().replace(/-/g,""))) return false;
+    const alpha=(tok.match(/^[A-Za-z]+/)||[""])[0];
+    if(!tok.includes("-") && alpha.length<2) return false; // v1, x86 gibileri ele
+    return true;
+  }
+
+  function collectHostnames(text, found){
+    const seen=new Set();
+    const push=(s,e,v)=>{ const k=s+":"+e; if(!seen.has(k)){ seen.add(k); found.push({start:s,end:e,value:v,type:"hostname"}); } };
+    // 1) config anahtarı ile: hostname: X   Host = X   CN=X   (rakamsız isimlere de güvenilir)
+    const kw=/\b(?:hostname|nodename|node|computername|computer|dnsname|host|cn)\b\s*[:=]\s*["']?([A-Za-z][A-Za-z0-9\-]{1,62})["']?/gi;
+    let m;
+    while((m=kw.exec(text))){ const name=m[1]; const s=m.index+m[0].lastIndexOf(name); push(s,s+name.length,name); }
+    // 2) desen ile: server01, web02, db-prod-01 gibi rakam taşıyan jetonlar
+    const tok=/\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*\b/g;
+    while((m=tok.exec(text))){ if(looksLikeHost(m[0])) push(m.index,m.index+m[0].length,m[0]); }
+  }
+
+  // ---------- config değer tespiti ----------
+  // datasource jboss / database name: appdb / schema=mySchema / jndi java:/jdbc/AppDS ...
+  const CFG_KEYS=[
+    "datasource name","datasource","data source","data-source","ds name","dsname",
+    "database name","database-name","databasename","database","db name","db-name","dbname","db",
+    "schema name","schema-name","schema","catalog",
+    "jndi name","jndi-name","jndi",
+    "driver class","driver-class","driver",
+    "connection pool","connection-pool","pool name","pool-name","pool",
+    "service name","service-name","servicename","sid","instance name","instance-name","instance",
+    "username","user name","user-id","userid","uid","realm","context root","context-root"
+  ].sort((a,b)=>b.length-a.length);
+  const CFG_ALT = CFG_KEYS.map(k=>k.split(/\s+/).map(rx).join("\\s+")).join("|");
+  const CFG_STOP=new Set(["is","are","was","were","be","been","the","a","an","of","for","to","in","on",
+    "and","or","not","no","yes","true","false","null","none","name","value","type","this","that","with",
+    "ise","olarak","bir","ve","veya","için","ile","adı","adi","ismi","olan","gibi","the"]);
+
+  function collectConfig(text, found){
+    const cfgRe=new RegExp('\\b(?:'+CFG_ALT+')\\b\\s*(?:[:=]|:=|=>|->)?\\s*["\']?([A-Za-z_][\\w.\\-\\/:]*)["\']?',"gi");
+    const values=new Set(); let m;
+    while((m=cfgRe.exec(text))){
+      let val=(m[1]||"").replace(/[:.]+$/,"");
+      if(val.length<2 || CFG_STOP.has(val.toLowerCase())) continue;
+      values.add(val);
+      if(m.index===cfgRe.lastIndex) cfgRe.lastIndex++;
+    }
+    // her değeri metnin tamamında maskele (tutarlılık için) — sınır korumalı
+    for(const v of values){
+      const vre=new RegExp('(?<![A-Za-z0-9._\\-\\/])'+rx(v)+'(?![A-Za-z0-9._\\-\\/])',"g");
+      let mm; while((mm=vre.exec(text))){ found.push({start:mm.index,end:mm.index+v.length,value:v,type:"config"}); if(mm.index===vre.lastIndex) vre.lastIndex++; }
+    }
+  }
+
+  function collect(text, opts){
+    const found = [];
+    const add = (re, type)=>{ re.lastIndex=0; let m;
+      while((m=re.exec(text))){ if(m[0]) found.push({start:m.index,end:m.index+m[0].length,value:m[0],type}); if(m.index===re.lastIndex) re.lastIndex++; } };
+
+    if(opts.custom){
+      const terms = document.getElementById("customTerms").value
+        .split(",").map(s=>s.trim()).filter(Boolean)
+        .sort((a,b)=>b.length-a.length); // uzun terim önce
+      for(const term of terms){ add(new RegExp(rx(term),"gi"),"custom"); }
+    }
+    if(opts.email)  add(PAT.email,"email");
+    if(opts.domain) add(PAT.domain,"domain");
+    if(opts.ipv6)   add(PAT.ipv6,"ipv6");
+    if(opts.ipv4)   add(PAT.ipv4,"ipv4");
+    if(opts.mac)    add(PAT.mac,"mac");
+    if(opts.hostname) collectHostnames(text, found);
+    if(opts.config) collectConfig(text, found);
+
+    // çakışmaları çöz: başlangıca göre, sonra önceliğe, sonra uzunluğa göre
+    found.sort((a,b)=> a.start-b.start || PRIO[b.type]-PRIO[a.type] || (b.end-b.start)-(a.end-a.start));
+    const chosen=[]; let lastEnd=-1;
+    for(const m of found){ if(m.start>=lastEnd){ chosen.push(m); lastEnd=m.end; } }
+    return chosen;
+  }
+
+  function readToggles(){
+    const o={};
+    document.querySelectorAll('#toggles input').forEach(c=>o[c.dataset.t]=c.checked);
+    return o;
+  }
+
+  // ---------- anonimleştir ----------
+  function anonymize(){
+    const text = document.getElementById("src").value;
+    if(!text.trim()){ toast("Önce sol üste metin yapıştır."); return; }
+    const matches = collect(text, readToggles());
+
+    let html="", plain="", i=0;
+    for(const m of matches){
+      html  += esc(text.slice(i,m.start));
+      plain += text.slice(i,m.start);
+      const fake = getFake(m.value, m.type);
+      html  += `<mark class="m" title="${esc(m.value)} · ${m.type}">${esc(fake)}</mark>`;
+      plain += fake;
+      i = m.end;
+    }
+    html  += esc(text.slice(i));
+    plain += text.slice(i);
+
+    const el=document.getElementById("masked");
+    el.innerHTML = html; el.dataset.plain = plain;
+    bump(el);
+    document.getElementById("btnCopyMasked").disabled = !plain.length;
+    renderLedger(); updateStatus(matches.length);
+    if(!matches.length) toast("Seçili türlerde eşleşme bulunamadı.");
+  }
+
+  // ---------- geri çevir ----------
+  function restore(){
+    let text = document.getElementById("reply").value;
+    if(!text.trim()){ toast("Önce AI'ın cevabını yapıştır."); return; }
+    if(!entries.length){ toast("Eşleştirme defteri boş — önce anonimleştir ya da defteri içe aktar."); }
+    // uzun sahteler önce (kısmi çakışmayı engelle)
+    const pairs=[...entries].sort((a,b)=>b.fake.length-a.fake.length);
+    let count=0, plain=text;
+    // tür-bazlı sınır: IP/MAC sahtesi harf/_ ile bitişik olabilir (ör. ada_<ip>),
+    // sadece rakam/hex/ayraç komşuluğunu engelle; diğerlerinde kelime sınırı kullan.
+    const guard=t=>{
+      if(t==="ipv4")               return ['(?<![0-9.])','(?![0-9.])'];
+      if(t==="ipv6"||t==="mac")    return ['(?<![0-9A-Fa-f:.\\-])','(?![0-9A-Fa-f:.\\-])'];
+      return ['(?<![A-Za-z0-9._\\-\\/])','(?![A-Za-z0-9._\\-\\/])'];
+    };
+    // sade metni değiştir — sınır korumalı (srv3, srv30 içinde eşleşmesin)
+    for(const p of pairs){
+      const g=guard(p.type);
+      const re=new RegExp(g[0]+rx(p.fake)+g[1],'g');
+      const c=(plain.match(re)||[]).length;
+      if(c){ count+=c; plain=plain.replace(re,p.real); }
+    }
+
+    // vurgulu önizleme (gerçek değerleri kırmızı göster)
+    let esced=esc(plain);
+    for(const p of [...entries].sort((a,b)=>b.real.length-a.real.length)){
+      esced=esced.split(esc(p.real)).join(`\u0000${esc(p.real)}\u0001`);
+    }
+    esced=esced.replace(/\u0000([\s\S]*?)\u0001/g,'<mark class="r">$1</mark>');
+
+    const el=document.getElementById("restored");
+    el.innerHTML=esced; el.dataset.plain=plain;
+    bump(el);
+    document.getElementById("btnCopyRestored").disabled=!plain.length;
+    toast(count?`${count} değer geri çevrildi.`:"Bu metinde sahte değer bulunamadı.");
+  }
+
+  // ---------- defter render ----------
+  const LABELS={ipv4:"IPv4",ipv6:"IPv6",domain:"DNS",email:"E-POSTA",mac:"MAC",hostname:"HOST",config:"CONFIG",custom:"ÖZEL"};
+  function renderLedger(){
+    const body=document.getElementById("ledBody");
+    const empty=document.getElementById("ledEmpty");
+    document.getElementById("ledCount").textContent=entries.length;
+    if(!entries.length){ body.innerHTML=""; empty.style.display="block"; return; }
+    empty.style.display="none";
+    body.innerHTML=entries.map(e=>`<tr>
+      <td><span class="tag">${LABELS[e.type]||e.type}</span></td>
+      <td class="c-real">${esc(e.real)}</td>
+      <td class="c-fake">${esc(e.fake)}</td></tr>`).join("");
+  }
+  function updateStatus(n){
+    document.getElementById("stCount").textContent=`${entries.length} öğe maskelendi`;
+    const safe=document.getElementById("stSafe");
+    if(entries.length){ safe.textContent="gönderime hazır"; safe.className="chip safe"; }
+    else { safe.textContent="gönderime hazır değil"; safe.className="chip warn"; }
+  }
+
+  // ---------- kopyala ----------
+  function copyFrom(id,label){
+    const t=document.getElementById(id).dataset.plain||"";
+    if(!t){ toast("Kopyalanacak içerik yok."); return; }
+    navigator.clipboard.writeText(t).then(()=>toast(label+" kopyalandı."),()=>{
+      const ta=document.createElement("textarea");ta.value=t;document.body.appendChild(ta);ta.select();
+      document.execCommand("copy");ta.remove();toast(label+" kopyalandı.");
+    });
+  }
+
+  // ---------- dışa / içe / sıfırla ----------
+  function exportMap(){
+    if(!entries.length){ toast("Dışa aktarılacak eşleşme yok."); return; }
+    const blob=new Blob([JSON.stringify({version:1,entries},null,2)],{type:"application/json"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+    a.download="anon-defteri-"+new Date().toISOString().slice(0,10)+".json";a.click();
+    URL.revokeObjectURL(a.href); toast("Defter indirildi.");
+  }
+  function importMap(file){
+    const r=new FileReader();
+    r.onload=()=>{ try{
+      const data=JSON.parse(r.result); if(!Array.isArray(data.entries)) throw 0;
+      for(const e of data.entries){
+        if(!e.real||!e.fake||realToFake.has(e.real)) continue;
+        realToFake.set(e.real,e.fake); usedFakes.add(e.fake);
+        entries.push({real:e.real,fake:e.fake,type:e.type||"custom"});
+      }
+      renderLedger(); updateStatus(); toast("Defter içe aktarıldı — artık geri çevirebilirsin.");
+    }catch(_){ toast("Dosya okunamadı — geçerli bir defter .json'u seç."); } };
+    r.readAsText(file);
+  }
+  function resetAll(){
+    entries.length=0; realToFake.clear(); usedFakes.clear();
+    baseMap.clear(); labelMap.clear(); usedBases=new Set(); usedLabels=new Set();
+    document.getElementById("masked").innerHTML="";
+    document.getElementById("restored").innerHTML="";
+    document.getElementById("btnCopyMasked").disabled=true;
+    document.getElementById("btnCopyRestored").disabled=true;
+    renderLedger(); updateStatus(); toast("Sıfırlandı.");
+  }
+
+  // ---------- toast ----------
+  let tTimer;
+  function toast(msg){
+    const el=document.getElementById("toast"); el.textContent=msg; el.classList.add("show");
+    clearTimeout(tTimer); tTimer=setTimeout(()=>el.classList.remove("show"),2200);
+  }
+
+  // ---------- bağla ----------
+  const bump = el => { el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); };
+  document.getElementById("btnMask").onclick=anonymize;
+  document.getElementById("btnRestore").onclick=restore;
+  document.getElementById("btnCopyMasked").onclick=()=>copyFrom("masked","Maskeli metin");
+  document.getElementById("btnCopyRestored").onclick=()=>copyFrom("restored","Sonuç");
+  document.getElementById("btnClearIn").onclick=()=>{
+    document.getElementById("src").value="";
+    const m=document.getElementById("masked"); m.innerHTML=""; m.dataset.plain="";
+    document.getElementById("btnCopyMasked").disabled=true; toast("Giriş temizlendi.");
+  };
+  document.getElementById("btnClearReply").onclick=()=>{
+    document.getElementById("reply").value="";
+    const r=document.getElementById("restored"); r.innerHTML=""; r.dataset.plain="";
+    document.getElementById("btnCopyRestored").disabled=true; toast("Cevap alanı temizlendi.");
+  };
+  document.getElementById("btnExport").onclick=exportMap;
+  document.getElementById("btnReset").onclick=resetAll;
+  document.getElementById("btnImport").onclick=()=>document.getElementById("fileImport").click();
+  document.getElementById("fileImport").onchange=e=>{ if(e.target.files[0]) importMap(e.target.files[0]); e.target.value=""; };
+  document.addEventListener("keydown",e=>{ if((e.ctrlKey||e.metaKey)&&e.key==="Enter") anonymize(); });
+
+  updateStatus();
+})();
+</script>
+</body>
+</html>
