@@ -33,11 +33,26 @@ try:
     from pynput import keyboard
 except Exception:
     keyboard = None
-try:
-    import pystray
-    from PIL import Image, ImageDraw
-except Exception:
-    pystray = None
+def _import_pystray():
+    try:
+        import pystray
+        from PIL import Image, ImageDraw
+        return pystray, Image, ImageDraw
+    except Exception:
+        pass
+    # Linux: GTK/AppIndicator yoksa saf X11 arka ucunu dene (XFCE, i3, minimal kurulumlar)
+    if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
+        for m in [k for k in sys.modules if k == "pystray" or k.startswith("pystray.")]:
+            del sys.modules[m]
+        os.environ["PYSTRAY_BACKEND"] = "xorg"
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+            return pystray, Image, ImageDraw
+        except Exception:
+            pass
+    return None, None, None
+pystray, Image, ImageDraw = _import_pystray()
 
 STORE = os.path.join(os.path.expanduser("~"), ".anonim_ajan.json")
 
@@ -405,7 +420,38 @@ def _clipboard_counter():
             return lambda: int(pb.changeCount())
         except Exception:
             return None
-    return None
+    return _x11_counter()
+
+
+def _x11_counter():
+    """Linux/X11: XFixes ile pano sahibi değişimlerini sayar — her Ctrl+C bir olaydır,
+    içerik aynı olsa bile. python-xlib, pynput ile birlikte zaten kurulu gelir."""
+    if not os.environ.get("DISPLAY"):
+        return None
+    try:
+        import Xlib.display
+        from Xlib.ext import xfixes
+        disp = Xlib.display.Display()
+        if not disp.has_extension("XFIXES"):
+            return None
+        disp.xfixes_query_version()
+        clip = disp.intern_atom("CLIPBOARD")
+        disp.xfixes_select_selection_input(disp.screen().root, clip,
+                                           xfixes.XFixesSetSelectionOwnerNotifyMask)
+        disp.flush()
+    except Exception:
+        return None
+    state = {"n": 0}
+    def listen():
+        while True:
+            try:
+                ev = disp.next_event()
+                if (ev.type, getattr(ev, "sub_code", None)) == disp.extension_event.SetSelectionOwnerNotify:
+                    state["n"] += 1
+            except Exception:
+                return
+    threading.Thread(target=listen, daemon=True).start()
+    return lambda: state["n"]
 
 ECHO_GRACE = 1.0   # sn — bizim yazdığımız metin bu süre içinde tekrar belirirse (RDP vb.) yankı sayılır
 
@@ -489,6 +535,19 @@ class Agent:
     def _poll(self):
         """Yeni bir kopyalama olayı varsa panodaki metni döndürür, yoksa None."""
         seq = self._seq()
+        if seq is not None and sys.platform.startswith("linux"):
+            # Linux: X11 sayacı + içerik kontrolü birlikte (Wayland'da sayaç olay kaçırabilir)
+            seq_changed = seq != self.last_seq
+            self.last_seq = seq
+            try: cur = pyperclip.paste()
+            except Exception: return None
+            ncur = _norm(cur)
+            if not seq_changed and ncur == self.seen_norm: return None
+            self.seen_norm = ncur
+            if ncur == self.written_norm:
+                # kendi yazdığımız: yalnızca kullanıcı sonradan AYNI metni tekrar kopyaladıysa işle
+                if not seq_changed or time.time() - self.written_at < ECHO_GRACE: return None
+            return cur
         if seq is not None:
             # Sayaç modu: içerik aynı olsa da her Ctrl+C yeni olaydır.
             if seq == self.last_seq: return None
@@ -605,15 +664,20 @@ def run_gui(agent):
                          bg=PANEL, fg=TEXT, activebackground="#26527a", bd=0,
                          font=("Segoe UI", 10, "bold"), padx=16, pady=8)
     auto_btn.pack(side="left")
-    MODE_TXT = {"smart": "Yön: Akıllı  (log→maskele · AI cevabı→geri çevir)",
-                "mask":  "Yön: Sadece maskele  (her kopya maskelenir)"}
+    MODE_TXT = {"smart": "Yön: Akıllı", "mask": "Yön: Sadece maskele"}
     def toggle_mode():
         agent.mode = "mask" if agent.mode == "smart" else "smart"
-        mode_btn.config(text=MODE_TXT[agent.mode])
-        gui.flash("Oto yön: " + ("Akıllı" if agent.mode == "smart" else "Sadece maskele"))
+        mode_btn.config(text=MODE_TXT[agent.mode]); gui.refresh()
+        gui.flash("Oto yön: " + ("Akıllı — log maskelenir, AI cevabı geri çevrilir" if agent.mode == "smart"
+                                 else "Sadece maskele — her kopya maskelenir"))
     mode_btn = button(togglebar, MODE_TXT[agent.mode], toggle_mode, "small")
-    mode_btn.pack(side="left", padx=(8,0))
+    mode_btn.pack(side="left", padx=(8,0), fill="y")
     cap_lbl = label(togglebar, "", DIM, 8); cap_lbl.pack(side="right")
+
+    # alt durum çubuğu — sekmelerden ÖNCE ve en alta yerleşir, pencere küçülse de hep görünür
+    statusbar = tk.Frame(root, bg=BG); statusbar.pack(side="bottom", fill="x", padx=14, pady=(2,10))
+    flash_lbl = label(statusbar, "hazır", ACT, 9); flash_lbl.config(anchor="w", justify="left")
+    flash_lbl.pack(side="left", fill="x", expand=True)
 
     # oto-izle durum kaynağı (tek giriş noktası; her thread'den güvenli)
     auto_cb_var = tk.BooleanVar(value=False)
@@ -742,10 +806,6 @@ def run_gui(agent):
     button(bookbtns, "İçe aktar", do_import, "small").pack(side="right", padx=(0,6))
     button(bookbtns, "Dışa aktar", do_export, "small").pack(side="right", padx=(0,6))
 
-    # ---------- alt durum çubuğu (hep görünür) ----------
-    statusbar = tk.Frame(root, bg=BG); statusbar.pack(fill="x", padx=14, pady=(0,10))
-    flash_lbl = label(statusbar, "hazır", ACT, 9); flash_lbl.pack(side="left")
-
     class Gui:
         def refresh(self):
             def _():
@@ -753,7 +813,8 @@ def run_gui(agent):
                 for e in agent.mapper.entries:
                     tree.insert("", "end", values=(LABELS.get(e["type"],e["type"]), e["real"], e["fake"]))
                 ledcount.config(text="%d kayıt" % len(agent.mapper.entries))
-                auto_lbl.config(text=("● OTO AÇIK — kopyala: log→maskele, cevap→geri çevir" if agent.auto else "○ oto-izle kapalı"),
+                auto_lbl.config(text=(("● Kopyala: log→maskele, AI cevabı→geri çevir" if agent.mode == "smart"
+                                       else "● Kopyala: her metin maskelenir") if agent.auto else "○ oto-izle kapalı"),
                                 fg=(SAFE if agent.auto else DIM))
                 auto_btn.config(text=("● OTO-İZLE AÇIK  (kapatmak için tıkla)" if agent.auto else "○ OTO-İZLE KAPALI  (açmak için tıkla)"),
                                 bg=(SAFE if agent.auto else PANEL), fg=("#08222d" if agent.auto else TEXT))
@@ -842,10 +903,15 @@ def run_gui(agent):
     agent.notify = notify
 
     def on_close():
-        if icon is not None:
+        if sys.platform == "win32" and icon is not None:
             root.withdraw(); notify("Anonim Ajan", "Arka planda çalışıyor — tepsi ikonundan aç.")
+        elif sys.platform != "win32":
+            # Linux/macOS: her masaüstünde tepsi alanı yok (ör. düz GNOME). Gizlemek yerine
+            # küçült — pencere görev çubuğunda kalır, izleme sürer. Tamamen çıkış: tepsi → Çıkış veya Ctrl+Q.
+            root.iconify(); notify("Anonim Ajan", "Küçültüldü, izleme sürüyor. Çıkmak için Ctrl+Q.")
         else:
             agent.stop(); root.destroy()
+    root.bind_all("<Control-q>", lambda e: (agent.stop(), root.destroy()))
     root.protocol("WM_DELETE_WINDOW", on_close)
 
     if keyboard:
@@ -869,10 +935,11 @@ def run_gui(agent):
     else:
         gui.flash("pyperclip yok — kur: pip install pyperclip pynput, sonra tekrar çalıştır.")
     set_auto(clip_ok)
-    cap_lbl.config(text="Pano: %s   ·   Kısayol: %s   ·   Tepsi: %s" % (
+    cap_lbl.config(text="Pano %s · Kısayol %s · Tepsi %s · Tekrar-kopya %s" % (
         "✓" if clip_ok else "✗",
-        "✓ Ctrl+Alt+A/R/T" if keyboard else "✗ pynput yok",
-        "✓" if icon is not None else "✗"))
+        "✓" if keyboard else "✗ (pynput yok)",
+        "✓" if icon is not None else "✗",
+        "✓" if agent.counter else "✗"))
     if not keyboard:
         gui.flash("Kısayollar kapalı (pynput yok) — yukarıdaki düğmeyle aç/kapat. Kurmak için: pip install pynput")
     elif clip_ok:

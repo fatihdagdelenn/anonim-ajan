@@ -27,7 +27,17 @@ yorum yapabilir.
 
 ## Hızlı başlangıç
 
+**Windows / macOS**
 ```bash
+pip install -r requirements.txt
+python anonim_agent.py
+```
+
+**Linux** (güncel Ubuntu/Debian sistem Python'una `pip install` yapılmasına
+izin vermez, bu yüzden sanal ortam kullanılır)
+```bash
+sudo apt install python3-tk python3-venv xclip     # Fedora: sudo dnf install python3-tkinter xclip
+python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 python anonim_agent.py
 ```
@@ -107,16 +117,29 @@ makinelerde de çalışır. Açılışta başlasın istersen kısayolunu
 ```bash
 chmod +x build_linux.sh && ./build_linux.sh
 ```
-Sonuç `dist/anonim-ajan` olur. Önerilen sistem paketleri:
-- Debian/Ubuntu: `sudo apt install xclip libnotify-bin gir1.2-appindicator3-0.1 python3-tk`
-- Fedora: `sudo dnf install xclip libnotify libappindicator-gtk3 python3-tkinter`
+Script eksik sistem paketlerini kontrol eder, eksik varsa kurulum komutunu
+yazar. Python paketlerini proje klasöründeki `.venv` içine kurar, sisteme
+dokunmaz. Sonuç `dist/anonim-ajan` olur; aynı mimarideki Linux'larda Python
+olmadan çalışır. Farklı bir Python ile derlemek için:
+`PYTHON=python3.12 ./build_linux.sh`
+
+Masaüstünde derle (ekransız bir sunucuda değil): kısayol modülleri derleme
+sırasında ekran bağlantısı arar.
 
 ## Platform notları
 
 - **Windows:** tüm özellikler çalışır.
-- **Linux:** pano için `xclip` veya `xsel` gerekir. Global kısayollar X11'de
-  çalışır, Wayland'da çalışmayabilir. Aynı metni ikinci kez kopyalamak
-  algılanamaz, farklı metinler normal çalışır.
+- **Linux (X11 — Xorg oturumu):** tüm özellikler çalışır; aynı metni tekrar
+  kopyalamak da algılanır. Pano için `xclip` veya `xsel` gerekir.
+- **Linux (Wayland — güncel Ubuntu/Fedora varsayılanı):** kutular çalışır, pano
+  yakalama genellikle çalışır (sorun olursa `sudo apt install wl-clipboard`).
+  Global kısayollar ve aynı metni tekrar kopyalama algılaması çalışmayabilir. Hepsini istiyorsan giriş ekranında ⚙ simgesinden
+  "Ubuntu on Xorg" / "GNOME on Xorg" oturumunu seç. Oturum türünü görmek için:
+  `echo $XDG_SESSION_TYPE`
+- **Linux tepsi ikonu:** KDE, XFCE, Cinnamon ve Ubuntu'nun GNOME'unda çıkar.
+  Tepsi alanı olmayan masaüstlerinde (ör. Fedora'nın düz GNOME'u) çıkmaz.
+  Bu yüzden Linux'ta pencereyi kapatmak uygulamayı kapatmaz, görev çubuğuna
+  küçültür; izleme sürer. Tamamen çıkmak için pencerede `Ctrl+Q`.
 - **macOS:** kısayol ve pano için Sistem Ayarları → Gizlilik ve Güvenlik →
   Erişilebilirlik ve Girdi İzleme izni gerekir. Aynı metni ikinci kez
   kopyalamayı algılamak için `pip install pyobjc-framework-Cocoa` kurulu olmalı.

@@ -38,7 +38,13 @@ if errorlevel 1 (
 
 echo.
 echo [2/3] EXE olusturuluyor (konsolsuz, tek dosya)...
-pyinstaller --noconsole --onefile --name AnonimAjan anonim_agent.py
+REM pynput / pystray arka uclari calisma aninda yuklenir; PyInstaller goremedigi icin acikca ekliyoruz.
+REM Bunlar olmadan exe'de kisayollar (Ctrl+Alt+A/R/T) ve tepsi ikonu calismaz.
+python -m PyInstaller --noconfirm --noconsole --onefile --name AnonimAjan ^
+  --hidden-import pynput.keyboard._win32 ^
+  --hidden-import pynput.mouse._win32 ^
+  --hidden-import pystray._win32 ^
+  anonim_agent.py
 if errorlevel 1 (
   echo HATA: PyInstaller basarisiz.
   pause
