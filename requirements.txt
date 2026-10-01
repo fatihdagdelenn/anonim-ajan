@@ -1,3 +1,4 @@
+customtkinter
 pyperclip
 pynput
 pystray

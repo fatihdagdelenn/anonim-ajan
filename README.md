@@ -6,6 +6,8 @@ maskeleyen, AI'ın cevabını da **gerçek değerlere geri çeviren** masaüstü
 
 Her şey bilgisayarında çalışır. Hiçbir ağ bağlantısı yoktur, veri dışarı çıkmaz.
 
+![Anonim Ajan](ekran.png)
+
 ```
 Gerçek :  datasource jboss → app01.fatih.com.tr (10.10.10.20) yanıt vermiyor
 Maskeli:  datasource db_d78 → relay66z.serdivan.systems (10.104.15.66) yanıt vermiyor
@@ -24,6 +26,7 @@ yorum yapabilir.
 | `requirements.txt` | Python paketleri |
 | `build_windows.bat` | Windows için tek dosya `.exe` üretir |
 | `build_linux.sh` | Linux için tek dosya çalıştırılabilir üretir |
+| `ekran.png` | README'deki ekran görüntüsü |
 
 ## Hızlı başlangıç
 
@@ -48,7 +51,8 @@ Python kurmadan kullanmak istersen [Paketleme](#paketleme) bölümüne bak.
 
 ### Otomatik: kopyala, yapıştır
 
-Uygulama açılınca pano erişimi varsa **OTO-İZLE** kendiliğinden açılır.
+Uygulama açılınca pano erişimi varsa **Oto-izle** anahtarı kendiliğinden açılır.
+Üstteki durum kartı korumanın açık olup olmadığını ve son işlemi gösterir.
 
 1. Logu kopyala (`Ctrl+C`). Panodaki metin anında maskelenir.
 2. AI'a yapıştır (`Ctrl+V`). Giden metin zaten maskelidir.
@@ -60,17 +64,21 @@ verir. Metinde defterdeki sahteler baskınsa geri çevirir, yeni hassas değer
 varsa maskeler. Emin olamazsa hep maskeler, böylece gerçek veri yanlışlıkla
 AI'a gitmez.
 
-Aynı maskeli metni tekrar kopyalamak da geri çevirmeyi tetikler (Windows ve macOS).
+Aynı maskeli metni tekrar kopyalamak da geri çevirmeyi tetikler.
 
-**Yön** düğmesi ile davranışı değiştirebilirsin:
+Çıktı kutularında maskelenen değerler yeşil, geri çevrilen gerçek değerler
+kırmızı tonla vurgulanır; neyin değiştiğini bir bakışta görürsün.
+
+Sağ üstteki **Yön** seçicisiyle davranışı değiştirebilirsin:
 - `Akıllı` (varsayılan): log maskelenir, AI cevabı geri çevrilir.
 - `Sadece maskele`: her kopya maskelenir. Geri çevirmeyi elle yaparsın.
 
 ### Elle: sekmeler
 
-- **Anonimleştir:** logu yapıştır, kategorileri seç, *Anonimleştir*, *Kopyala*.
-- **Geri Çevir:** AI cevabını yapıştır, *Geri çevir*, *Kopyala*.
-- **Defter:** gerçek ↔ sahte tablosu. Dışa/içe aktarma ve sıfırlama buradan.
+- **Anonimleştir:** logu yapıştır, kategorileri seç, *Anonimleştir* (veya `Ctrl+Enter`), *Kopyala*.
+- **Geri Çevir:** AI cevabını yapıştır, *Geri çevir* (veya `Ctrl+Enter`), *Kopyala*.
+- **Defter:** gerçek ↔ sahte tablosu, en yeni kayıt üstte. Arama, dışa/içe
+  aktarma ve sıfırlama buradan.
 
 Kategoriler (IPv4, IPv6, DNS, E-posta, MAC, Host, Config, Özel) tek tıkla
 açılıp kapanır. Fazla maskeleyen bir kategori olursa kapatabilirsin.
@@ -84,9 +92,12 @@ virgülle ekleyebilirsin.
 | `Ctrl+Alt+A` | Panodaki metni anonimleştir |
 | `Ctrl+Alt+R` | Panodaki metni geri çevir |
 | `Ctrl+Alt+T` | Oto-izlemeyi aç/kapat |
+| `Ctrl+Enter` | Kutudaki metni işle (pencere içinde) |
+| `Ctrl+Q` | Uygulamadan çık (pencere içinde) |
 
-Kısayollar `pynput` paketini gerektirir. Pencereyi kapatınca uygulama sistem
-tepsisine iner ve arka planda çalışmaya devam eder.
+`Ctrl+Alt` kısayolları her uygulamada çalışır ve `pynput` paketini gerektirir.
+Pencereyi kapatınca uygulama kapanmaz: Windows'ta sistem tepsisine iner,
+Linux'ta görev çubuğuna küçülür; izleme sürer.
 
 ## Neler maskelenir, neler maskelenmez
 
@@ -110,8 +121,10 @@ dosyasını Linux'ta üretmen gerekir.
 
 **Windows:** `build_windows.bat` dosyasını `anonim_agent.py` ile aynı klasöre
 koyup çift tıkla. Sonuç `dist\AnonimAjan.exe` olur ve Python kurulu olmayan
-makinelerde de çalışır. Açılışta başlasın istersen kısayolunu
-`Win+R → shell:startup` klasörüne koy.
+makinelerde de çalışır. Uygulama simgesi exe'ye gömülür. Gezgin hâlâ eski
+simgeyi gösterirse exe'yi başka bir klasöre kopyala; Windows simge önbelleğini
+geç yeniler. Açılışta başlasın istersen kısayolunu `Win+R → shell:startup`
+klasörüne koy.
 
 **Linux:**
 ```bash
@@ -125,6 +138,25 @@ olmadan çalışır. Farklı bir Python ile derlemek için:
 
 Masaüstünde derle (ekransız bir sunucuda değil): kısayol modülleri derleme
 sırasında ekran bağlantısı arar.
+
+**Linux'ta menüye ekleme ve açılışta başlatma** (build sonrası, aynı klasörde):
+```bash
+mkdir -p ~/.local/bin ~/.local/share/applications ~/.local/share/icons ~/.config/autostart
+cp dist/anonim-ajan ~/.local/bin/
+cp dist/anonim-ajan.png ~/.local/share/icons/
+cat > ~/.local/share/applications/anonim-ajan.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=Anonim Ajan
+Comment=Log ve config anonimleştirici
+Exec=$HOME/.local/bin/anonim-ajan
+Icon=$HOME/.local/share/icons/anonim-ajan.png
+Terminal=false
+Categories=Utility;
+EOF
+cp ~/.local/share/applications/anonim-ajan.desktop ~/.config/autostart/
+```
+Açılışta başlamasın istersen `~/.config/autostart/anonim-ajan.desktop` dosyasını sil.
 
 ## Platform notları
 
@@ -164,6 +196,9 @@ sürümünde var.
 
 ## Sorun giderme
 
+- **Uygulama açılmıyor:** açılışta bir hata olursa ekranda uyarı çıkar ve
+  ayrıntılar ev klasöründeki `anonim_ajan_hata.log` dosyasına yazılır. O
+  dosyanın içeriğini paylaşırsan sorun hızlıca bulunur.
 - **Kısayollar çalışmıyor:** durum satırında "Kısayol: ✗" yazıyorsa
   `pip install pynput` gerekir. Kısayol olmadan da OTO-İZLE düğmesi çalışır.
 - **"Pano: ✗":** `pip install pyperclip`. Linux'ta ayrıca `sudo apt install xclip`.

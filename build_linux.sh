@@ -40,13 +40,17 @@ python -m pip install --quiet --upgrade pip
 if [ -f "requirements.txt" ]; then
   python -m pip install --quiet -r requirements.txt pyinstaller
 else
-  python -m pip install --quiet pyperclip pynput pystray Pillow pyinstaller
+  python -m pip install --quiet customtkinter pyperclip pynput pystray Pillow pyinstaller
 fi
 
 echo "[3/4] Tek dosya olusturuluyor..."
 # pynput / pystray arka uclari calisma aninda yuklenir; PyInstaller goremedigi icin acikca ekliyoruz.
 # Xlib: klavye kisayollari ve "ayni metni tekrar kopyala" algilamasi (XFixes) icin gerekli.
+# --collect-data customtkinter: arayuz tema dosyalari; olmadan uygulama acilmaz.
 python -m PyInstaller --noconfirm --onefile --name anonim-ajan \
+  --collect-data customtkinter \
+  --hidden-import darkdetect \
+  --hidden-import PIL._tkinter_finder \
   --hidden-import pynput.keyboard._xorg \
   --hidden-import pynput.mouse._xorg \
   --hidden-import pystray._xorg \
@@ -55,7 +59,12 @@ python -m PyInstaller --noconfirm --onefile --name anonim-ajan \
   --collect-submodules Xlib \
   anonim_agent.py
 
+# Masaustu kisayolu (.desktop) icin simge
+python anonim_agent.py --export-icon dist/anonim-ajan.png >/dev/null
+
 echo "[4/4] TAMAM."
 echo "Uygulama:  $(pwd)/dist/anonim-ajan"
+echo "Simge:     $(pwd)/dist/anonim-ajan.png"
 echo "Calistir:  ./dist/anonim-ajan"
+echo "Menuye eklemek ve acilista baslatmak icin README'deki 'Linux'ta menuye ekleme' adimlarina bak."
 echo "Not: Bu dosya ayni mimarideki (x86_64) Linux'larda Python olmadan calisir."

@@ -3,24 +3,26 @@
 """
 Anonim Ajan — log/config anonimleştirici (masaüstü).
 
-İKİ KULLANIM:
-  1) Kutu akışı (HTML gibi, her zaman çalışır): logu üst kutuya yapıştır,
-     kategorileri seç, "Anonimleştir"e bas, maskeli çıktıyı "Panoya kopyala".
-     AI'ın cevabını alt kutuya yapıştır, "Geri çevir" ile gerçek değerlere dön.
-  2) Pano yakalama (bonus): "Oto-izle"yi aç ya da kısayolları kullan; kopyaladığın
-     metin havada yakalanıp maskelenir. (İzin gerektirir — aşağıdaki nota bak.)
+Log ve config çıktılarındaki IP, DNS, hostname, e-posta, MAC ve config
+değerlerini AI'a göndermeden önce tutarlı sahtelerle maskeler; AI'ın
+cevabını gerçek değerlere geri çevirir. Her şey yerelde çalışır.
 
-Kısayollar (isteğe bağlı, pynput varsa):
+Kullanım:
+  • Oto-izle açıkken: log kopyala → panoda maskeli hali olur;
+    AI cevabını kopyala → panoda gerçek hali olur.
+  • Ya da sekmelerdeki kutulara yapıştırıp butonlarla çalış.
+
+Kısayollar (pynput gerekir):
   Ctrl+Alt+A  panodaki metni anonimleştir
   Ctrl+Alt+R  panodaki metni geri çevir
-  Ctrl+Alt+T  oto-izlemeyi aç/kapa
+  Ctrl+Alt+T  oto-izlemeyi aç/kapat
 
-Kurulum:   pip install pyperclip pynput
+Kurulum:   pip install -r requirements.txt
 Çalıştır:  python anonim_agent.py
+Simge:     python anonim_agent.py --export-icon anonim_ajan.ico   (veya .png)
 
-macOS: Sistem Ayarları > Gizlilik ve Güvenlik > Erişilebilirlik + Girdi İzleme'de
-       Terminal/Python'a izin ver (yalnızca pano yakalama/kısayol için gerekir;
-       kutu akışı iznsiz çalışır). Linux: pano için 'xclip' veya 'xsel' kurulu olmalı.
+macOS: kısayol/pano için Sistem Ayarları > Gizlilik ve Güvenlik > Erişilebilirlik
+       + Girdi İzleme izni gerekir. Linux: pano için 'xclip' veya 'xsel' gerekir.
 """
 
 import json, os, re, sys, threading, time, random
@@ -595,24 +597,146 @@ class Agent:
     def stop(self): self.running = False
 
 
+# =====================================================================
+#  SİMGE — kalkan + sansür çubukları (exe, pencere, görev çubuğu, tepsi)
+# =====================================================================
+try:
+    from PIL import Image as PILImage, ImageDraw as PILDraw, ImageFilter as PILFilter, ImageChops as PILChops
+except Exception:
+    PILImage = None
+
+def _bezier(p0, p1, p2, p3, n=48):
+    pts = []
+    for i in range(n + 1):
+        t = i / n; u = 1 - t
+        pts.append((u**3*p0[0] + 3*u*u*t*p1[0] + 3*u*t*t*p2[0] + t**3*p3[0],
+                    u**3*p0[1] + 3*u*u*t*p1[1] + 3*u*t*t*p2[1] + t**3*p3[1]))
+    return pts
+
+def _shield(cx, top, w, h):
+    L, R, T = cx - w/2, cx + w/2, top
+    r = w * 0.13
+    pts = []
+    pts += _bezier((L, T + r), (L, T), (L, T), (L + r, T), 12)
+    pts += _bezier((R - r, T), (R, T), (R, T), (R, T + r), 12)
+    pts += _bezier((R, T + h*0.46), (R, T + h*0.80), (cx + w*0.20, T + h*0.93), (cx, T + h))
+    pts += _bezier((cx, T + h), (cx - w*0.20, T + h*0.93), (L, T + h*0.80), (L, T + h*0.46))
+    return pts
+
+_ICON_CACHE = {}
+def app_icon(size=256):
+    """Uygulama simgesi (RGBA). 1024'lük tuval üzerinde 2x süper örneklemeyle çizilir."""
+    if size in _ICON_CACHE: return _ICON_CACHE[size]
+    S = 2048 if size > 64 else 1024
+    k = S / 1024
+    v = PILImage.linear_gradient("L").resize((S, S))
+    grad = PILChops.add(v, v.rotate(90), scale=2.0)                      # sol üst → sağ alt
+    tile = PILImage.composite(PILImage.new("RGBA", (S, S), (24, 74, 168, 255)),
+                              PILImage.new("RGBA", (S, S), (43, 212, 168, 255)), grad)
+    mask = PILImage.new("L", (S, S), 0)
+    PILDraw.Draw(mask).rounded_rectangle([int(40*k), int(40*k), int(984*k), int(984*k)], radius=int(220*k), fill=255)
+    img = PILImage.new("RGBA", (S, S), (0, 0, 0, 0)); img.paste(tile, (0, 0), mask)
+    shadow = PILImage.new("L", (S, S), 0)
+    PILDraw.Draw(shadow).polygon([(x*k, (y+26)*k) for x, y in _shield(512, 210, 560, 640)], fill=110)
+    shadow = PILChops.multiply(shadow.filter(PILFilter.GaussianBlur(28*k)), mask)
+    img = PILImage.composite(PILImage.new("RGBA", (S, S), (6, 20, 40, 255)), img, shadow)
+    d = PILDraw.Draw(img)
+    d.polygon([(x*k, y*k) for x, y in _shield(512, 210, 560, 640)], fill=(244, 252, 250, 255))
+    for x0, y0, x1, col in ((338, 360, 686, (14, 42, 59, 255)),
+                            (338, 470, 600, (43, 212, 168, 255)),
+                            (338, 580, 650, (14, 42, 59, 255))):
+        d.rounded_rectangle([x0*k, y0*k, x1*k, (y0+64)*k], radius=int(32*k), fill=col)
+    out = img.resize((size, size), PILImage.LANCZOS)
+    _ICON_CACHE[size] = out
+    return out
+
+def export_icon(path):
+    """Simgeyi dosyaya yazar: .ico (16–256 her boyut ayrı çizilir) ya da .png (512)."""
+    if PILImage is None:
+        raise SystemExit("Simge için Pillow gerekli: pip install Pillow")
+    if path.lower().endswith(".ico"):
+        sizes = (16, 24, 32, 48, 64, 128, 256)
+        frames = [app_icon(s) for s in sizes]
+        frames[-1].save(path, format="ICO", sizes=[(s, s) for s in sizes], append_images=frames[:-1])
+    else:
+        app_icon(512).save(path)
+    return path
+
+
+# =====================================================================
+#  ARAYÜZ
+# =====================================================================
+
 def run_gui(agent):
     import tkinter as tk
-    from tkinter import ttk, filedialog, messagebox
+    from tkinter import ttk, filedialog, messagebox, font as tkfont
+    try:
+        import customtkinter as ctk
+    except ImportError:
+        try:
+            r = tk.Tk(); r.withdraw()
+            messagebox.showerror("Anonim Ajan", "Arayüz paketi eksik.\n\npip install customtkinter")
+        except Exception:
+            pass
+        raise SystemExit("customtkinter eksik: pip install customtkinter")
 
-    BG="#0d1117"; PANEL="#161b22"; INK="#0b0f14"; TEXT="#c9d4e0"; DIM="#7d8b9c"
-    SAFE="#43c46a"; ACT="#4fb3d9"; REAL="#f2596a"; LINE="#2a3542"
-    MONO=("Consolas", 10); SANS=("Segoe UI", 9)
+    if sys.platform == "win32":
+        try:   # script olarak çalışırken görev çubuğunda Python simgesi yerine bizimki görünsün
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AnonimAjan.App")
+        except Exception:
+            pass
 
-    root = tk.Tk()
+    ctk.set_appearance_mode("dark")
+
+    # ---------- renk sistemi ----------
+    BG      = "#0B0E14"   # pencere
+    SURF    = "#121722"   # kart
+    SURF2   = "#182030"   # yükseltilmiş / üzerine gelince
+    INK     = "#0D121A"   # metin kutusu
+    BORDER  = "#232C3B"
+    BORDER2 = "#33405A"
+    TEXT    = "#E8EDF5"
+    MUTED   = "#8C97AB"
+    FAINT   = "#5D687C"
+    TEAL    = "#2BD4A8";  TEAL_H = "#55E3C0";  TEAL_INK = "#04261E";  TEAL_BG = "#10302A";  TEAL_LINE = "#1F5F50"
+    CORAL   = "#FF8A7A";  CORAL_BG = "#3A1F1D";  CORAL_LINE = "#5A2E2A"
+
+    root = ctk.CTk(fg_color=BG)
     root.title("Anonim Ajan")
-    root.geometry("820x680"); root.minsize(640, 560); root.configure(bg=BG)
+    try:
+        sc = ctk.ScalingTracker.get_window_scaling(root)
+        max_h = int(root.winfo_screenheight() / sc) - 90
+    except Exception:
+        sc, max_h = 1.0, 820
+    root.geometry("1000x%d" % min(800, max_h)); root.minsize(840, min(640, max_h))
 
-    style = ttk.Style()
-    try: style.theme_use("clam")
-    except Exception: pass
-    style.configure("Treeview", background=PANEL, foreground=TEXT, fieldbackground=PANEL, rowheight=22, borderwidth=0)
-    style.configure("Treeview.Heading", background="#1b232d", foreground=DIM, borderwidth=0)
-    style.map("Treeview", background=[("selected","#26527a")])
+    fams = set(tkfont.families(root))
+    def pick(*names):
+        return next((n for n in names if n in fams), None)
+    UI   = pick("Segoe UI Variable Text", "Segoe UI", "Inter", "SF Pro Text", "Helvetica Neue",
+                "Ubuntu", "Cantarell", "Noto Sans", "DejaVu Sans") or "TkDefaultFont"
+    UI_D = pick("Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", "Inter", "SF Pro Display",
+                "Ubuntu", "Cantarell", "Noto Sans", "DejaVu Sans") or UI
+    MONO = pick("Cascadia Mono", "Cascadia Code", "JetBrains Mono", "SF Mono", "Consolas",
+                "Ubuntu Mono", "DejaVu Sans Mono") or "TkFixedFont"
+    def F(size, weight="normal", family=None):
+        return ctk.CTkFont(family=family or UI, size=size, weight=weight)
+
+    # ---------- pencere simgesi ----------
+    ico_path = None
+    if PILImage is not None:
+        try:
+            if sys.platform == "win32":
+                import tempfile
+                ico_path = export_icon(os.path.join(tempfile.gettempdir(), "anonim_ajan.ico"))
+                root.iconbitmap(ico_path)
+            else:
+                from PIL import ImageTk
+                root._icon_ref = ImageTk.PhotoImage(app_icon(256))
+                root.iconphoto(True, root._icon_ref)
+        except Exception:
+            pass
 
     def put_clipboard(t):
         """Uygulama içi 'Kopyala': önce yaz, sonra işaretle — izleyici bunu kullanıcı kopyası sanmasın."""
@@ -621,252 +745,390 @@ def run_gui(agent):
         else:
             root.clipboard_clear(); root.clipboard_append(t); root.update(); agent.mark_written(t)
 
-    def textbox(parent, h):
-        t = tk.Text(parent, height=h, bg=INK, fg=TEXT, insertbackground=TEXT, relief="flat",
-                    font=MONO, wrap="word", padx=10, pady=8, bd=1, highlightthickness=1,
-                    highlightbackground=LINE, highlightcolor=ACT)
-        return t
-    def label(parent, txt, fg=DIM, size=9, bold=False):
-        return tk.Label(parent, text=txt, bg=BG, fg=fg, font=("Segoe UI", size, "bold" if bold else "normal"))
-    def _hover(w, normal, hover):
-        w.bind("<Enter>", lambda e: w.config(bg=hover))
-        w.bind("<Leave>", lambda e: w.config(bg=normal))
+    # ---------- yapı taşları ----------
+    def card(master):
+        return ctk.CTkFrame(master, fg_color=SURF, corner_radius=14, border_width=1, border_color=BORDER)
+
+    def clear(master):
+        return ctk.CTkFrame(master, fg_color="transparent")
+
     BTN = {
-        "primary": (ACT,      "#63d6ff", "#08222d", ("Segoe UI",10,"bold"), 18, 9),
-        "normal":  ("#1b2530","#243444", TEXT,      ("Segoe UI",9,"bold"),  14, 8),
-        "ghost":   (BG,       "#1b2530", DIM,       ("Segoe UI",9),         12, 7),
-        "danger":  ("#2a171b","#4a2530", REAL,      ("Segoe UI",9,"bold"),  13, 8),
-        "small":   ("#161f29","#243444", DIM,       ("Segoe UI",8),         10, 5),
+        "primary":   dict(fg_color=TEAL, hover_color=TEAL_H, text_color=TEAL_INK, border_width=0),
+        "secondary": dict(fg_color=SURF2, hover_color="#212B3D", text_color=TEXT, border_width=1, border_color=BORDER),
+        "ghost":     dict(fg_color="transparent", hover_color=SURF2, text_color=MUTED, border_width=0),
+        "outline":   dict(fg_color="transparent", hover_color=TEAL_BG, text_color=TEAL, border_width=1, border_color=TEAL_LINE),
+        "danger":    dict(fg_color="transparent", hover_color=CORAL_BG, text_color=CORAL, border_width=1, border_color=CORAL_LINE),
     }
-    def button(parent, txt, cmd, kind="normal"):
-        bg,hov,fg,font,px,py = BTN.get(kind, BTN["normal"])
-        b = tk.Button(parent, text=txt, command=cmd, relief="flat", cursor="hand2",
-                      bg=bg, fg=fg, activebackground=hov, activeforeground=fg, bd=0,
-                      font=font, padx=px, pady=py)
-        _hover(b, bg, hov); return b
+    def btn(master, text, cmd, kind="secondary", width=110, height=34, size=12):
+        return ctk.CTkButton(master, text=text, command=cmd, width=width, height=height, corner_radius=9,
+                             font=F(size if kind != "primary" else size + 1, "bold"), **BTN[kind])
 
-    # ---------- üst bar: logo + başlık + OTO-İZLE düğmesi (hep görünür) ----------
-    head = tk.Frame(root, bg=BG); head.pack(fill="x", padx=14, pady=(12,2))
-    logo = tk.Canvas(head, width=34, height=34, bg=BG, highlightthickness=0)
-    logo.create_polygon(17,3,29,8,29,17,17,31,5,17,5,8, outline=ACT, width=2, fill="#132030")
-    logo.create_line(5,8,17,3,29,8, fill="#63d6ff", width=1)
-    logo.create_oval(12,12,22,22, outline="#63d6ff", width=2)
-    logo.create_line(24,27,10,27, fill=SAFE, width=2)
-    logo.pack(side="left", padx=(0,10))
-    titlebox = tk.Frame(head, bg=BG); titlebox.pack(side="left")
-    label(titlebox, "Anonim Ajan", TEXT, 14, True).pack(anchor="w")
-    label(titlebox, "log · config anonimleştirici", DIM, 8).pack(anchor="w")
-    auto_lbl = label(head, "", DIM, 9, True); auto_lbl.pack(side="right")
+    def textbox(master):
+        t = ctk.CTkTextbox(master, height=90, fg_color=INK, border_width=1, border_color=BORDER, corner_radius=10,
+                           text_color=TEXT, font=ctk.CTkFont(family=MONO, size=12), wrap="word",
+                           border_spacing=10, scrollbar_button_color=BORDER, scrollbar_button_hover_color=BORDER2)
+        t.bind("<FocusIn>",  lambda e: t.configure(border_color=TEAL_LINE), add=True)
+        t.bind("<FocusOut>", lambda e: t.configure(border_color=BORDER), add=True)
+        return t
 
-    togglebar = tk.Frame(root, bg=BG); togglebar.pack(fill="x", padx=14, pady=(2,6))
-    auto_btn = tk.Button(togglebar, text="○ OTO-İZLE KAPALI  (açmak için tıkla)",
-                         command=lambda: set_auto(not agent.auto), relief="flat", cursor="hand2",
-                         bg=PANEL, fg=TEXT, activebackground="#26527a", bd=0,
-                         font=("Segoe UI", 10, "bold"), padx=16, pady=8)
-    auto_btn.pack(side="left")
-    MODE_TXT = {"smart": "Yön: Akıllı", "mask": "Yön: Sadece maskele"}
+    def set_text(tb, s):
+        tb.delete("1.0", "end"); tb.insert("1.0", s)
+
+    def highlight(tb, text, pairs, tag):
+        """pairs: [(değer, tür)] — metinde geçen her değeri renkli etiketle işaretle."""
+        for v, typ in pairs:
+            if not v or v not in text: continue
+            if typ in ("ipv4", "ipv6", "mac"):
+                lb, la = agent.mapper._guard(typ)
+            else:
+                lb, la = r"(?<![A-Za-z0-9_\-])", r"(?![A-Za-z0-9_\-])"
+            for m in re.finditer(lb + re.escape(v) + la, text):
+                tb.tag_add(tag, "1.0+%dc" % m.start(), "1.0+%dc" % m.end())
+
+    def show_fakes(tb, text):
+        set_text(tb, text)
+        highlight(tb, text, [(e["fake"], e["type"]) for e in agent.mapper.entries], "fake")
+
+    def show_reals(tb, text):
+        set_text(tb, text)
+        highlight(tb, text, [(e["real"], e["type"]) for e in agent.mapper.entries], "real")
+
+    # ---------- kısayollar penceresi ----------
+    def show_hotkeys(*_):
+        win = ctk.CTkToplevel(root, fg_color=BG)
+        win.title("Kısayollar"); win.resizable(False, False); win.transient(root)
+        if ico_path:
+            win.after(250, lambda: win.iconbitmap(ico_path))
+        body = clear(win); body.pack(fill="both", expand=True, padx=26, pady=24)
+        ctk.CTkLabel(body, text="Klavye kısayolları", font=F(17, "bold", UI_D), text_color=TEXT,
+                     anchor="w").pack(anchor="w", pady=(0, 14))
+        rows = [(("Ctrl", "Alt", "A"), "Panodaki metni anonimleştir"),
+                (("Ctrl", "Alt", "R"), "Panodaki metni geri çevir"),
+                (("Ctrl", "Alt", "T"), "Oto-izlemeyi aç / kapat"),
+                (("Ctrl", "Enter"),    "Kutudaki metni işle"),
+                (("Ctrl", "Q"),        "Uygulamadan çık")]
+        grid = clear(body); grid.pack(fill="x")
+        for row, (keys, desc) in enumerate(rows):
+            kf = clear(grid); kf.grid(row=row, column=0, sticky="w", pady=4)
+            for i, kname in enumerate(keys):
+                if i: ctk.CTkLabel(kf, text="+", text_color=FAINT, font=F(11), width=14).pack(side="left")
+                ctk.CTkLabel(kf, text=" %s " % kname, font=F(11, "bold"), text_color=TEXT, fg_color=SURF2,
+                             corner_radius=6, height=26).pack(side="left")
+            ctk.CTkLabel(grid, text=desc, font=F(13), text_color=MUTED, anchor="w").grid(
+                row=row, column=1, sticky="w", padx=(18, 0))
+        note = ("Oto-izle açıkken kısayola gerek yok: log kopyala → maskelenir, "
+                "AI cevabını kopyala → gerçek değerlere döner.")
+        if not keyboard:
+            note = "Global kısayollar kapalı: pynput paketi yok (pip install pynput). " + note
+        ctk.CTkLabel(body, text=note, font=F(12), text_color=(CORAL if not keyboard else FAINT),
+                     wraplength=400, justify="left", anchor="w").pack(anchor="w", pady=(16, 18))
+        btn(body, "Tamam", win.destroy, "primary", width=120, height=36).pack(anchor="e")
+        win.update_idletasks()
+        x = root.winfo_rootx() + (root.winfo_width() - win.winfo_reqwidth()) // 2
+        y = root.winfo_rooty() + (root.winfo_height() - win.winfo_reqheight()) // 3
+        win.geometry("+%d+%d" % (max(x, 0), max(y, 0)))
+        win.lift(); win.focus_force()
+
+    # ---------- üst bölüm ----------
+    header = clear(root); header.pack(fill="x", padx=26, pady=(22, 14))
+    if PILImage is not None:
+        try:
+            logo = ctk.CTkImage(light_image=app_icon(128), dark_image=app_icon(128), size=(42, 42))
+            ctk.CTkLabel(header, text="", image=logo).pack(side="left")
+        except Exception as ex:          # logo çizilemezse uygulama logosuz devam etsin
+            print("Logo gösterilemedi:", ex)
+    tb_ = clear(header); tb_.pack(side="left", padx=(12, 0))
+    ctk.CTkLabel(tb_, text="Anonim Ajan", font=F(21, "bold", UI_D), text_color=TEXT, anchor="w").pack(anchor="w")
+    ctk.CTkLabel(tb_, text="Log ve config verilerini AI'a göndermeden önce maskeler",
+                 font=F(12), text_color=MUTED, anchor="w").pack(anchor="w")
+    btn(header, "Kısayollar", show_hotkeys, "ghost", width=96, height=32).pack(side="right", padx=(10, 0))
+
+    MODES = {"Akıllı": "smart", "Sadece maskele": "mask"}
+    def on_mode(value):
+        agent.mode = MODES.get(value, "smart"); gui.refresh()
+        gui.flash("Yön: Akıllı — log maskelenir, AI cevabı geri çevrilir" if agent.mode == "smart"
+                  else "Yön: Sadece maskele — her kopya maskelenir")
+    mode_seg = ctk.CTkSegmentedButton(header, values=list(MODES), command=on_mode, height=32,
+                                      font=F(12, "bold"), fg_color=SURF, selected_color="#26324A",
+                                      selected_hover_color="#2C3A55", unselected_color=SURF,
+                                      unselected_hover_color=SURF2, text_color=TEXT, corner_radius=9)
+    mode_seg.set("Akıllı" if agent.mode == "smart" else "Sadece maskele")
+    mode_seg.pack(side="right")
+    ctk.CTkLabel(header, text="Yön", font=F(12), text_color=FAINT).pack(side="right", padx=(0, 10))
     def toggle_mode():
-        agent.mode = "mask" if agent.mode == "smart" else "smart"
-        mode_btn.config(text=MODE_TXT[agent.mode]); gui.refresh()
-        gui.flash("Oto yön: " + ("Akıllı — log maskelenir, AI cevabı geri çevrilir" if agent.mode == "smart"
-                                 else "Sadece maskele — her kopya maskelenir"))
-    mode_btn = button(togglebar, MODE_TXT[agent.mode], toggle_mode, "small")
-    mode_btn.pack(side="left", padx=(8,0), fill="y")
-    cap_lbl = label(togglebar, "", DIM, 8); cap_lbl.pack(side="right")
+        mode_seg.set("Sadece maskele" if agent.mode == "smart" else "Akıllı")
+        on_mode(mode_seg.get())
 
-    # alt durum çubuğu — sekmelerden ÖNCE ve en alta yerleşir, pencere küçülse de hep görünür
-    statusbar = tk.Frame(root, bg=BG); statusbar.pack(side="bottom", fill="x", padx=14, pady=(2,10))
-    flash_lbl = label(statusbar, "hazır", ACT, 9); flash_lbl.config(anchor="w", justify="left")
-    flash_lbl.pack(side="left", fill="x", expand=True)
+    # ---------- durum kartı ----------
+    hero = card(root); hero.pack(fill="x", padx=26)
+    top = clear(hero); top.pack(fill="x", padx=20, pady=(16, 0))
+    dot = ctk.CTkLabel(top, text="●", font=F(20), text_color=TEAL, width=22); dot.pack(side="left", anchor="n")
+    tbox = clear(top); tbox.pack(side="left", padx=(8, 0), fill="x", expand=True)
+    hero_title = ctk.CTkLabel(tbox, text="", font=F(16, "bold", UI_D), text_color=TEXT, anchor="w")
+    hero_title.pack(anchor="w")
+    hero_sub = ctk.CTkLabel(tbox, text="", font=F(12), text_color=MUTED, anchor="w", justify="left")
+    hero_sub.pack(anchor="w", fill="x")
 
-    # oto-izle durum kaynağı (tek giriş noktası; her thread'den güvenli)
-    auto_cb_var = tk.BooleanVar(value=False)
-    def set_auto(value):
+    auto_var = tk.BooleanVar(value=False)
+    def set_auto(value, quiet=False):
         agent.auto = bool(value)
         def _():
-            if auto_cb_var.get() != agent.auto: auto_cb_var.set(agent.auto)
-            gui.refresh(); gui.flash("Oto-izle: " + ("AÇIK" if agent.auto else "KAPALI"))
+            if auto_var.get() != agent.auto: auto_var.set(agent.auto)
+            gui.refresh()
+            if not quiet: gui.flash("Oto-izle " + ("açık" if agent.auto else "kapalı"))
         root.after(0, _)
     agent.set_auto = set_auto
+    auto_sw = ctk.CTkSwitch(top, text="Oto-izle", variable=auto_var, onvalue=True, offvalue=False,
+                            command=lambda: set_auto(auto_var.get()), switch_width=54, switch_height=28,
+                            progress_color=TEAL, fg_color=BORDER2, button_color="#F2F6FB",
+                            button_hover_color="#FFFFFF", font=F(13, "bold"), text_color=TEXT)
+    auto_sw.pack(side="right")
+
+    ctk.CTkFrame(hero, height=1, fg_color=BORDER).pack(fill="x", padx=20, pady=(14, 0))
+    hb = clear(hero); hb.pack(fill="x", padx=20, pady=(10, 14))
+    caps_box = clear(hb); caps_box.pack(side="right")
+    last_lbl = ctk.CTkLabel(hb, text="Hazır", font=F(12), text_color=MUTED, anchor="w")
+    last_lbl.pack(side="left", fill="x", expand=True)
+
+    def set_caps(items):
+        for w in caps_box.winfo_children(): w.destroy()
+        for name, ok in items:
+            ctk.CTkLabel(caps_box, text=("  ✓  %s  " if ok else "  ✕  %s  ") % name, height=24, corner_radius=12,
+                         font=F(11, "bold"), fg_color=(TEAL_BG if ok else SURF2),
+                         text_color=(TEAL if ok else FAINT)).pack(side="left", padx=(6, 0))
 
     # ---------- sekmeler ----------
-    style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(6,4,6,0))
-    style.configure("TNotebook.Tab", background=PANEL, foreground=DIM,
-                    padding=(20,9), font=("Segoe UI",10,"bold"), borderwidth=0)
-    style.map("TNotebook.Tab", background=[("selected", INK)], foreground=[("selected", ACT)])
-    nb = ttk.Notebook(root); nb.pack(fill="both", expand=True, padx=12, pady=(0,4))
-    tab_anon = tk.Frame(nb, bg=BG); nb.add(tab_anon, text="  Anonimleştir  ")
-    tab_rest = tk.Frame(nb, bg=BG); nb.add(tab_rest, text="  Geri Çevir  ")
-    tab_book = tk.Frame(nb, bg=BG); nb.add(tab_book, text="  Defter  ")
+    tabbar = clear(root); tabbar.pack(fill="x", padx=26, pady=(18, 12))
+    PAGES = ["Anonimleştir", "Geri Çevir", "Defter"]
+    tabs = ctk.CTkSegmentedButton(tabbar, values=PAGES, height=38, font=F(13, "bold"),
+                                  fg_color=SURF, selected_color="#26324A", selected_hover_color="#2C3A55",
+                                  unselected_color=SURF, unselected_hover_color=SURF2, text_color=TEXT,
+                                  corner_radius=10, command=lambda v: show_page(v))
+    tabs.pack(side="left")
+    ledger_badge = ctk.CTkLabel(tabbar, text="", font=F(12), text_color=FAINT)
+    ledger_badge.pack(side="left", padx=(12, 0))
 
-    # ===== SEKME 1: Anonimleştir =====
-    label(tab_anon, "Kategoriler — fazla maskeleyeni kapat (yeşil = açık)", DIM, 8).pack(anchor="w", padx=12, pady=(10,0))
-    togf = tk.Frame(tab_anon, bg=BG); togf.pack(fill="x", padx=10, pady=(3,6))
+    content = clear(root); content.pack(fill="both", expand=True, padx=26, pady=(0, 22))
+    content.grid_rowconfigure(0, weight=1); content.grid_columnconfigure(0, weight=1)
+    pages = {}
+    for name in PAGES:
+        f = clear(content); f.grid(row=0, column=0, sticky="nsew"); pages[name] = f
+    def show_page(name):
+        pages[name].tkraise()
+        if tabs.get() != name: tabs.set(name)
+
+    def io_card(master, title, hint):
+        c = card(master)
+        h = clear(c); h.pack(fill="x", padx=16, pady=(12, 8))
+        ctk.CTkLabel(h, text=title, font=F(12, "bold"), text_color=TEXT, anchor="w").pack(side="left")
+        ctk.CTkLabel(h, text="  ·  " + hint, font=F(12), text_color=FAINT, anchor="w").pack(side="left")
+        t = textbox(c); t.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        return c, h, t
+
+    # ===== Anonimleştir =====
+    pa = pages["Anonimleştir"]
+    pa.grid_columnconfigure(0, weight=1)
+    pa.grid_rowconfigure(1, weight=1, uniform="io"); pa.grid_rowconfigure(3, weight=1, uniform="io")
+    chiprow = clear(pa); chiprow.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+    chips = clear(chiprow); chips.pack(side="left")
     optvars = {}
-    def make_chip(parent, t):
+    def make_chip(t):
         v = tk.BooleanVar(value=True); optvars[t] = v
-        chip = tk.Label(parent, text=LABELS[t], font=("Consolas",9,"bold"), cursor="hand2", padx=11, pady=5, bd=0)
-        def paint(): chip.config(bg=(ACT if v.get() else "#1b2530"), fg=("#08222d" if v.get() else DIM))
-        def toggle(e=None): v.set(not v.get()); paint()
-        chip.bind("<Button-1>", toggle)
-        chip.bind("<Enter>", lambda e: chip.config(bg=("#63d6ff" if v.get() else "#243444")))
-        chip.bind("<Leave>", lambda e: paint())
-        paint(); return chip
+        b = ctk.CTkButton(chips, text=LABELS[t], width=10, height=30, corner_radius=15, font=F(11, "bold"),
+                          border_width=1)
+        def paint():
+            on = v.get()
+            b.configure(fg_color=(TEAL_BG if on else "transparent"), hover_color=(TEAL_LINE if on else SURF2),
+                        border_color=(TEAL_LINE if on else BORDER), text_color=(TEAL if on else FAINT))
+        b.configure(command=lambda: (v.set(not v.get()), paint()))
+        paint(); return b
     for t in ALL_TYPES:
-        make_chip(togf, t).pack(side="left", padx=3, pady=2)
+        make_chip(t).pack(side="left", padx=(0, 6))
     def get_opts(): return {t: optvars[t].get() for t in ALL_TYPES}
     agent.get_opts = get_opts
+    custom_entry = ctk.CTkEntry(chiprow, height=32, corner_radius=9, border_width=1, border_color=BORDER,
+                                fg_color=INK, text_color=TEXT, font=F(12), width=120,
+                                placeholder_text="Özel terimler: firma adı, proje kodu…", placeholder_text_color=FAINT)
+    custom_entry.pack(side="left", fill="x", expand=True, padx=(8, 0))
+    if agent.mapper.custom_terms:
+        custom_entry.insert(0, ", ".join(agent.mapper.custom_terms))
 
-    cf = tk.Frame(tab_anon, bg=BG); cf.pack(fill="x", padx=12, pady=(0,8))
-    label(cf, "Özel terimler:", DIM, 9).pack(side="left")
-    custom_entry = tk.Entry(cf, bg=INK, fg=TEXT, insertbackground=TEXT, relief="flat", font=MONO,
-                            highlightthickness=1, highlightbackground=LINE, highlightcolor=ACT)
-    custom_entry.pack(side="left", fill="x", expand=True, padx=(8,0), ipady=3)
-    custom_entry.insert(0, ", ".join(agent.mapper.custom_terms))
+    in_card, in_head, src = io_card(pa, "Giriş", "log, config, hata çıktısı")
+    in_card.grid(row=1, column=0, sticky="nsew")
+    out_badge = ctk.CTkLabel(in_head, text="", font=F(11, "bold"), height=22, corner_radius=11)
 
-    # GİDEN
-    label(tab_anon, "Log / config yapıştır", TEXT, 10, True).pack(anchor="w", padx=12, pady=(2,2))
-    src = textbox(tab_anon, 8); src.pack(fill="both", expand=True, padx=12)
-    r1 = tk.Frame(tab_anon, bg=BG); r1.pack(fill="x", padx=12, pady=7)
-    out_lbl = label(r1, "", SAFE, 9, True)
-
+    act1 = clear(pa); act1.grid(row=2, column=0, sticky="ew", pady=12)
     def do_anon():
         agent.mapper.set_custom([s.strip() for s in custom_entry.get().split(",") if s.strip()])
-        txt = src.get("1.0","end-1c")
-        if not txt.strip(): return gui.flash("Üst kutuya metin yapıştır.")
+        txt = src.get("1.0", "end-1c")
+        if not txt.strip(): return gui.flash("Önce giriş kutusuna bir metin yapıştır.")
         masked, n = agent.mapper.anonymize(txt, get_opts())
-        masked_out.config(state="normal"); masked_out.delete("1.0","end"); masked_out.insert("1.0", masked)
-        gui.refresh(); out_lbl.config(text="%d öğe maskelendi" % n)
-        gui.flash("Anonimleştirildi — 'Kopyala' ile al.")
+        show_fakes(masked_out, masked); gui.refresh(); set_badge(n)
+        gui.flash("%d öğe maskelendi — Kopyala ile al." % n if n else "Maskelenecek bir değer bulunamadı.",
+                  "ok" if n else "info")
     def copy_masked():
-        t = masked_out.get("1.0","end-1c")
+        t = masked_out.get("1.0", "end-1c")
         if not t.strip(): return gui.flash("Kopyalanacak çıktı yok.")
-        put_clipboard(t)
-        gui.flash("Maskeli çıktı panoya kopyalandı.")
-    def clear_giden():
-        src.delete("1.0","end"); masked_out.delete("1.0","end"); out_lbl.config(text=""); gui.flash("Giriş temizlendi.")
-    button(r1, "Anonimleştir", do_anon, "primary").pack(side="left")
-    button(r1, "Kopyala", copy_masked, "normal").pack(side="left", padx=(6,0))
-    button(r1, "Temizle", clear_giden, "ghost").pack(side="left", padx=(6,0))
-    out_lbl.pack(side="right")
+        put_clipboard(t); gui.flash("Maskeli metin panoda — AI'a yapıştırabilirsin.", "ok")
+    def clear_in():
+        src.delete("1.0", "end"); masked_out.delete("1.0", "end"); set_badge(None); gui.flash("Temizlendi.")
+    def set_badge(n):
+        if n is None:
+            out_badge.pack_forget(); return
+        out_badge.configure(text="  %d öğe maskelendi  " % n, fg_color=TEAL_BG, text_color=TEAL)
+        out_badge.pack(side="right")
+    btn(act1, "Anonimleştir", do_anon, "primary", width=170, height=42).pack(side="left")
+    ctk.CTkLabel(act1, text="Ctrl+Enter", font=F(11), text_color=FAINT).pack(side="left", padx=12)
+    btn(act1, "Temizle", clear_in, "ghost", width=90, height=34).pack(side="right")
 
-    label(tab_anon, "Maskeli çıktı — bunu AI'a gönder", DIM, 9).pack(anchor="w", padx=12)
-    masked_out = textbox(tab_anon, 8); masked_out.pack(fill="both", expand=True, padx=12, pady=(2,12))
+    out_card, out_head, masked_out = io_card(pa, "AI'a gidecek metin", "maskeli")
+    out_card.grid(row=3, column=0, sticky="nsew")
+    btn(out_head, "Kopyala", copy_masked, "outline", width=92, height=30).pack(side="right")
+    masked_out.tag_config("fake", background=TEAL_BG, foreground=TEAL)
+    src.bind("<Control-Return>", lambda e: (do_anon(), "break")[1], add=True)
 
-    # ===== SEKME 2: Geri Çevir =====
-    label(tab_rest, "AI'ın cevabını yapıştır", TEXT, 10, True).pack(anchor="w", padx=12, pady=(12,2))
-    reply = textbox(tab_rest, 10); reply.pack(fill="both", expand=True, padx=12)
-    r2 = tk.Frame(tab_rest, bg=BG); r2.pack(fill="x", padx=12, pady=7)
+    # ===== Geri Çevir =====
+    pr = pages["Geri Çevir"]
+    pr.grid_columnconfigure(0, weight=1)
+    pr.grid_rowconfigure(0, weight=1, uniform="io"); pr.grid_rowconfigure(2, weight=1, uniform="io")
+    rin_card, _, reply = io_card(pr, "AI cevabı", "sahte değerler içeren metin")
+    rin_card.grid(row=0, column=0, sticky="nsew")
+    act2 = clear(pr); act2.grid(row=1, column=0, sticky="ew", pady=12)
     def do_restore():
-        txt = reply.get("1.0","end-1c")
-        if not txt.strip(): return gui.flash("AI cevabını yapıştır.")
+        txt = reply.get("1.0", "end-1c")
+        if not txt.strip(): return gui.flash("Önce AI'ın cevabını yapıştır.")
         restored, n = agent.mapper.restore(txt)
-        restored_out.config(state="normal"); restored_out.delete("1.0","end"); restored_out.insert("1.0", restored)
-        gui.flash("Geri çevrildi: %d değer" % n)
+        show_reals(restored_out, restored)
+        gui.flash("%d değer geri çevrildi." % n if n else "Bu metinde defterdeki sahtelerden biri yok.",
+                  "real" if n else "info")
     def copy_restored():
-        t = restored_out.get("1.0","end-1c")
+        t = restored_out.get("1.0", "end-1c")
         if not t.strip(): return gui.flash("Kopyalanacak sonuç yok.")
-        put_clipboard(t); gui.flash("Sonuç panoya kopyalandı.")
-    def clear_gelen():
-        reply.delete("1.0","end"); restored_out.delete("1.0","end"); gui.flash("Cevap alanı temizlendi.")
-    button(r2, "Geri çevir", do_restore, "primary").pack(side="left")
-    button(r2, "Kopyala", copy_restored, "normal").pack(side="left", padx=(6,0))
-    button(r2, "Temizle", clear_gelen, "ghost").pack(side="left", padx=(6,0))
-    label(tab_rest, "Geri çevrilmiş — gerçek değerler", DIM, 9).pack(anchor="w", padx=12)
-    restored_out = textbox(tab_rest, 10); restored_out.pack(fill="both", expand=True, padx=12, pady=(2,12))
+        put_clipboard(t); gui.flash("Gerçek değerli metin panoda.", "real")
+    def clear_rest():
+        reply.delete("1.0", "end"); restored_out.delete("1.0", "end"); gui.flash("Temizlendi.")
+    btn(act2, "Geri çevir", do_restore, "primary", width=170, height=42).pack(side="left")
+    ctk.CTkLabel(act2, text="Ctrl+Enter", font=F(11), text_color=FAINT).pack(side="left", padx=12)
+    btn(act2, "Temizle", clear_rest, "ghost", width=90, height=34).pack(side="right")
+    rout_card, rout_head, restored_out = io_card(pr, "Gerçek değerler", "editörüne / terminaline")
+    rout_card.grid(row=2, column=0, sticky="nsew")
+    btn(rout_head, "Kopyala", copy_restored, "danger", width=92, height=30).pack(side="right")
+    ctk.CTkLabel(rout_head, text="  AI'a gönderme  ", font=F(11, "bold"), height=22, corner_radius=11,
+                 fg_color=CORAL_BG, text_color=CORAL).pack(side="right", padx=(0, 10))
+    restored_out.tag_config("real", background=CORAL_BG, foreground=CORAL)
+    reply.bind("<Control-Return>", lambda e: (do_restore(), "break")[1], add=True)
 
-    # ===== SEKME 3: Defter =====
-    dh = tk.Frame(tab_book, bg=BG); dh.pack(fill="x", padx=12, pady=(12,2))
-    label(dh, "Eşleştirme defteri  (gerçek ↔ sahte)", TEXT, 10, True).pack(side="left")
-    ledcount = label(dh, "", DIM, 9); ledcount.pack(side="right")
-    tree = ttk.Treeview(tab_book, columns=("type","real","fake"), show="headings")
-    tree.heading("type", text="Tür"); tree.column("type", width=80, anchor="w")
-    tree.heading("real", text="Gerçek"); tree.column("real", width=300, anchor="w")
-    tree.heading("fake", text="Sahte");  tree.column("fake", width=300, anchor="w")
-    tree.pack(fill="both", expand=True, padx=12, pady=(6,8))
-    bookbtns = tk.Frame(tab_book, bg=BG); bookbtns.pack(fill="x", padx=12, pady=(0,12))
+    # ===== Defter =====
+    pd = pages["Defter"]
+    bar = clear(pd); bar.pack(fill="x", pady=(0, 12))
+    search = ctk.CTkEntry(bar, height=34, width=320, corner_radius=9, border_width=1,
+                          border_color=BORDER, fg_color=INK, text_color=TEXT, font=F(12),
+                          placeholder_text="Ara: IP, alan adı, sahte değer…", placeholder_text_color=FAINT)
+    search.pack(side="left")
+    ledcount = ctk.CTkLabel(bar, text="", font=F(12), text_color=FAINT); ledcount.pack(side="left", padx=12)
+
     def do_export():
-        p = filedialog.asksaveasfilename(defaultextension=".json", initialfile="anonim-defteri.json")
+        p = filedialog.asksaveasfilename(parent=root, defaultextension=".json", initialfile="anonim-defteri.json")
         if p:
-            with open(p,"w",encoding="utf-8") as f:
-                json.dump({"entries":agent.mapper.entries}, f, ensure_ascii=False, indent=1)
-            gui.flash("Defter dışa aktarıldı.")
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump({"entries": agent.mapper.entries}, f, ensure_ascii=False, indent=1)
+            gui.flash("Defter dışa aktarıldı. Dosya gerçek değerler içerir — paylaşma.", "real")
     def do_import():
-        p = filedialog.askopenfilename(filetypes=[("JSON","*.json")])
+        p = filedialog.askopenfilename(parent=root, filetypes=[("JSON", "*.json")])
         if p:
-            with open(p,encoding="utf-8") as f: d=json.load(f)
-            for e in d.get("entries",[]):
+            with open(p, encoding="utf-8") as f: d = json.load(f)
+            for e in d.get("entries", []):
                 if e.get("real") and e["real"] not in agent.mapper.real_to_fake:
-                    agent.mapper.real_to_fake[e["real"]]=e["fake"]; agent.mapper.used_fakes.add(e["fake"])
-                    agent.mapper.entries.append({"real":e["real"],"fake":e["fake"],"type":e.get("type","custom")})
-            agent.mapper.save(); gui.refresh(); gui.flash("Defter içe aktarıldı.")
+                    agent.mapper.real_to_fake[e["real"]] = e["fake"]; agent.mapper.used_fakes.add(e["fake"])
+                    agent.mapper.entries.append({"real": e["real"], "fake": e["fake"], "type": e.get("type", "custom")})
+            agent.mapper.save(); gui.refresh(); gui.flash("Defter içe aktarıldı.", "ok")
     def do_clear():
-        agent.mapper.clear(); gui.refresh(); gui.flash("Defter sıfırlandı.")
-    button(bookbtns, "Sıfırla", do_clear, "danger").pack(side="right")
-    button(bookbtns, "İçe aktar", do_import, "small").pack(side="right", padx=(0,6))
-    button(bookbtns, "Dışa aktar", do_export, "small").pack(side="right", padx=(0,6))
+        if not agent.mapper.entries: return gui.flash("Defter zaten boş.")
+        if messagebox.askyesno("Defteri sıfırla",
+                               "Tüm eşleşmeler silinsin mi?\n\nDaha önce AI'a gönderdiğin metinlerin cevapları "
+                               "artık geri çevrilemez.", parent=root):
+            agent.mapper.clear(); gui.refresh(); gui.flash("Defter sıfırlandı.")
+    btn(bar, "Sıfırla", do_clear, "danger", width=90).pack(side="right")
+    btn(bar, "İçe aktar", do_import, "secondary", width=100).pack(side="right", padx=(0, 8))
+    btn(bar, "Dışa aktar", do_export, "secondary", width=100).pack(side="right", padx=(0, 8))
 
+    led_card = card(pd); led_card.pack(fill="both", expand=True)
+    style = ttk.Style(root)
+    try: style.theme_use("clam")
+    except Exception: pass
+    style.configure("Ledger.Treeview", background=SURF, fieldbackground=SURF, foreground=TEXT,
+                    rowheight=int(34 * sc), borderwidth=0, relief="flat", font=(UI, 11))
+    style.configure("Ledger.Treeview.Heading", background=SURF, foreground=FAINT, borderwidth=0,
+                    relief="flat", font=(UI, 10, "bold"), padding=(10, 8))
+    style.map("Ledger.Treeview", background=[("selected", "#1C2A3D")], foreground=[("selected", TEXT)])
+    style.map("Ledger.Treeview.Heading", background=[("active", SURF)], foreground=[("active", MUTED)])
+    style.layout("Ledger.Treeview", [("Ledger.Treeview.treearea", {"sticky": "nswe"})])
+    tree_wrap = clear(led_card); tree_wrap.pack(fill="both", expand=True, padx=(12, 6), pady=10)
+    tree = ttk.Treeview(tree_wrap, columns=("type", "real", "fake"), show="headings", style="Ledger.Treeview")
+    for col, title, w in (("type", "TÜR", 90), ("real", "GERÇEK", 360), ("fake", "SAHTE", 360)):
+        tree.heading(col, text=title, anchor="w"); tree.column(col, width=w, anchor="w", stretch=(col != "type"))
+    tree.tag_configure("odd", background="#141A26")
+    vsb = ctk.CTkScrollbar(tree_wrap, command=tree.yview, button_color=BORDER, button_hover_color=BORDER2)
+    tree.configure(yscrollcommand=vsb.set)
+    vsb.pack(side="right", fill="y"); tree.pack(side="left", fill="both", expand=True)
+    empty_lbl = ctk.CTkLabel(led_card, text="Henüz eşleşme yok.\nBir log kopyaladığında ya da anonimleştirdiğinde burada görünür.",
+                             font=F(13), text_color=FAINT, justify="center")
+    search.bind("<KeyRelease>", lambda e: gui.refresh())
+
+    # ---------- arayüz köprüsü (izleyici thread'inden güvenle çağrılır) ----------
+    TONES = {"ok": TEAL, "real": CORAL, "info": MUTED, "warn": CORAL}
     class Gui:
         def refresh(self):
             def _():
-                for r in tree.get_children(): tree.delete(r)
-                for e in agent.mapper.entries:
-                    tree.insert("", "end", values=(LABELS.get(e["type"],e["type"]), e["real"], e["fake"]))
-                ledcount.config(text="%d kayıt" % len(agent.mapper.entries))
-                auto_lbl.config(text=(("● Kopyala: log→maskele, AI cevabı→geri çevir" if agent.mode == "smart"
-                                       else "● Kopyala: her metin maskelenir") if agent.auto else "○ oto-izle kapalı"),
-                                fg=(SAFE if agent.auto else DIM))
-                auto_btn.config(text=("● OTO-İZLE AÇIK  (kapatmak için tıkla)" if agent.auto else "○ OTO-İZLE KAPALI  (açmak için tıkla)"),
-                                bg=(SAFE if agent.auto else PANEL), fg=("#08222d" if agent.auto else TEXT))
+                q = search.get().strip().lower()
+                tree.delete(*tree.get_children())
+                rows = [e for e in agent.mapper.entries
+                        if not q or q in e["real"].lower() or q in e["fake"].lower() or q in LABELS.get(e["type"], "").lower()]
+                for i, e in enumerate(reversed(rows)):          # en yeni üstte
+                    tree.insert("", "end", values=(LABELS.get(e["type"], e["type"]), e["real"], e["fake"]),
+                                tags=("odd",) if i % 2 else ())
+                total = len(agent.mapper.entries)
+                ledcount.configure(text=("%d / %d kayıt" % (len(rows), total)) if q else ("%d kayıt" % total))
+                ledger_badge.configure(text=("Defterde %d eşleşme" % total) if total else "")
+                if total: empty_lbl.place_forget()
+                else: empty_lbl.place(relx=0.5, rely=0.5, anchor="center")
+                if auto_var.get() != agent.auto: auto_var.set(agent.auto)
+                if agent.auto:
+                    dot.configure(text_color=TEAL); hero_title.configure(text="Koruma aktif")
+                    hero_sub.configure(text=("Kopyaladığın loglar anında maskelenir, AI cevapları gerçek değerlere döner."
+                                             if agent.mode == "smart" else
+                                             "Kopyaladığın her metin maskelenir. Geri çevirmeyi elle yaparsın."))
+                else:
+                    dot.configure(text_color=FAINT); hero_title.configure(text="Oto-izle kapalı")
+                    hero_sub.configure(text="Pano izlenmiyor. Kutulara yapıştırarak elle çalışabilir ya da anahtarı açabilirsin.")
             root.after(0, _)
-        def flash(self, msg): root.after(0, lambda: flash_lbl.config(text=msg))
+        def flash(self, msg, tone="info"):
+            stamp = time.strftime("%H:%M")
+            root.after(0, lambda: last_lbl.configure(text="%s   %s" % (stamp, msg), text_color=TONES.get(tone, MUTED)))
         def capture(self, kind, original, result, n, why=""):
             def _():
-                try: nb.select(tab_rest if kind == "restore" else tab_anon)
-                except Exception: pass
                 if kind == "restore":
-                    reply.delete("1.0","end"); reply.insert("1.0", original)
-                    restored_out.delete("1.0","end"); restored_out.insert("1.0", result)
-                    flash_lbl.config(text=("↩ %s → geri çevrildi: %d değer. Gerçek hali panoda." % (why, n))
-                                     if n else "AI cevabı yakalandı — geri çevrilecek değer yoktu.")
+                    show_page("Geri Çevir"); set_text(reply, original); show_reals(restored_out, result)
+                    self.flash(("↩  AI cevabı: %d değer geri çevrildi · gerçek hali panoda" % n) if n
+                               else "AI cevabı yakalandı, geri çevrilecek değer yoktu", "real" if n else "info")
                 else:
-                    src.delete("1.0","end"); src.insert("1.0", original)
-                    masked_out.delete("1.0","end"); masked_out.insert("1.0", result)
-                    out_lbl.config(text="pano: %d öğe" % n)
-                    flash_lbl.config(text=("🛡 %s → maskelendi: %d öğe. Ctrl+V ile yapıştır." % (why.capitalize(), n))
-                                     if n else "Pano yakalandı — maskelenecek yeni değer yoktu.")
+                    show_page("Anonimleştir"); set_text(src, original); show_fakes(masked_out, result)
+                    set_badge(n)
+                    self.flash(("●  %d öğe maskelendi · Ctrl+V ile yapıştır" % n) if n
+                               else "Pano yakalandı, maskelenecek yeni değer yoktu", "ok" if n else "info")
             root.after(0, _)
-    gui = Gui(); agent.gui = gui; gui.refresh()
+    gui = Gui(); agent.gui = gui
+    show_page("Anonimleştir"); gui.refresh()
 
-    # ---- kısayol bilgisi ----
-    HOTKEY_TEXT = ("Ctrl+Alt+A   Panodaki metni anonimleştir\n"
-                   "Ctrl+Alt+R   Panodaki metni geri çevir\n"
-                   "Ctrl+Alt+T   Oto-izlemeyi aç/kapa\n\n"
-                   "Oto-izle açıkken: log kopyala → otomatik maskelenir; "
-                   "AI cevabını kopyala → otomatik geri çevrilir. Kısayola gerek kalmaz.")
-    def show_hotkeys(*_):
-        messagebox.showinfo("Kısayollar", HOTKEY_TEXT)
-    button(head, "Kısayollar", show_hotkeys, "small").pack(side="right", padx=(0,8))
-
-    # ---- sistem tepsisi ikonu + bildirim ----
+    # ---------- sistem tepsisi + bildirim ----------
     icon = None
-    if pystray:
-        def _mk_icon():
-            img = Image.new("RGBA", (64,64), (0,0,0,0)); d = ImageDraw.Draw(img)
-            d.polygon([(32,4),(56,14),(56,32),(32,60),(8,32),(8,14)], fill=(19,32,48,255), outline=(79,179,217,255))
-            d.line([(8,14),(32,4),(56,14)], fill=(99,214,255,255), width=2)
-            d.arc([24,17,40,35], start=180, end=360, fill=(99,214,255,255), width=3)  # kilit kemeri
-            d.rounded_rectangle([23,27,41,46], radius=3, fill=(79,179,217,255))       # kilit gövdesi
-            d.ellipse([29,33,35,39], fill=(19,32,48,255))                              # anahtar deliği
-            d.rectangle([31,37,33,43], fill=(19,32,48,255))
-            return img
-        def tray_toggle(i=None, item=None):
-            set_auto(not agent.auto)
+    if pystray and PILImage is not None:
+        def tray_toggle(i=None, item=None): set_auto(not agent.auto)
         def tray_show(i=None, item=None):
             root.after(0, lambda: (root.deiconify(), root.lift(), root.focus_force()))
         def tray_anon(i=None, item=None): agent.clip_anonymize()
         def tray_restore(i=None, item=None): agent.clip_restore()
-        def tray_clear(i=None, item=None): root.after(0, lambda: (agent.mapper.clear(), gui.refresh()))
+        def tray_clear(i=None, item=None): root.after(0, do_clear)
         def tray_keys(i=None, item=None): root.after(0, show_hotkeys)
         def tray_quit(i=None, item=None):
             try: icon.stop()
@@ -874,19 +1136,19 @@ def run_gui(agent):
             agent.stop(); root.after(0, root.destroy)
         menu = pystray.Menu(
             pystray.MenuItem("Göster", tray_show, default=True),
-            pystray.MenuItem(lambda i: ("Oto-izle: AÇIK" if agent.auto else "Oto-izle: kapalı"), tray_toggle),
+            pystray.MenuItem(lambda i: ("Oto-izle: açık" if agent.auto else "Oto-izle: kapalı"), tray_toggle),
             pystray.MenuItem(lambda i: ("Yön: Akıllı" if agent.mode == "smart" else "Yön: Sadece maskele"),
                              lambda i=None, item=None: root.after(0, toggle_mode)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Panoyu anonimleştir  (Ctrl+Alt+A)", tray_anon),
             pystray.MenuItem("Panoyu geri çevir  (Ctrl+Alt+R)", tray_restore),
-            pystray.MenuItem("Defteri sıfırla", tray_clear),
+            pystray.MenuItem("Defteri sıfırla…", tray_clear),
             pystray.MenuItem("Kısayollar…", tray_keys),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Çıkış", tray_quit),
         )
-        icon = pystray.Icon("anonim_ajan", _mk_icon(), "Anonim Ajan", menu)
         try:
+            icon = pystray.Icon("anonim_ajan", app_icon(64), "Anonim Ajan", menu)
             threading.Thread(target=icon.run, daemon=True).start()
         except Exception as ex:
             icon = None; print("Tepsi ikonu başlatılamadı:", ex)
@@ -897,17 +1159,15 @@ def run_gui(agent):
             except Exception: pass
         if sys.platform.startswith("linux"):
             try:
-                import subprocess; subprocess.Popen(["notify-send", title, msg]); return
+                import subprocess; subprocess.Popen(["notify-send", "-i", "security-high", title, msg]); return
             except Exception: pass
-        gui.flash(msg)
     agent.notify = notify
 
     def on_close():
         if sys.platform == "win32" and icon is not None:
-            root.withdraw(); notify("Anonim Ajan", "Arka planda çalışıyor — tepsi ikonundan aç.")
+            root.withdraw(); notify("Anonim Ajan", "Arka planda çalışıyor — tepsi simgesinden açabilirsin.")
         elif sys.platform != "win32":
-            # Linux/macOS: her masaüstünde tepsi alanı yok (ör. düz GNOME). Gizlemek yerine
-            # küçült — pencere görev çubuğunda kalır, izleme sürer. Tamamen çıkış: tepsi → Çıkış veya Ctrl+Q.
+            # Linux/macOS: her masaüstünde tepsi alanı yok (ör. düz GNOME) — gizlemek yerine küçült.
             root.iconify(); notify("Anonim Ajan", "Küçültüldü, izleme sürüyor. Çıkmak için Ctrl+Q.")
         else:
             agent.stop(); root.destroy()
@@ -923,44 +1183,65 @@ def run_gui(agent):
             })
             hk.daemon = True; hk.start()
         except Exception as ex:
-            gui.flash("Kısayollar başlatılamadı: %s" % ex)
+            gui.flash("Kısayollar başlatılamadı: %s" % ex, "warn")
 
-    # pano erişimi self-check → varsa oto-izleyi otomatik aç
+    # pano erişimi kontrolü → varsa oto-izleyi aç
     clip_ok = False
     if pyperclip:
         try:
-            pyperclip.paste(); agent.sync_now(); clip_ok = True   # açılışta mevcut panoyu maskeleme
+            pyperclip.paste(); agent.sync_now(); clip_ok = True   # açılıştaki panoya dokunma
         except Exception as ex:
-            gui.flash("Pano okunamıyor (%s). Linux'ta: sudo apt install xclip" % ex)
+            gui.flash("Pano okunamıyor (%s). Linux'ta: sudo apt install xclip" % ex, "warn")
     else:
-        gui.flash("pyperclip yok — kur: pip install pyperclip pynput, sonra tekrar çalıştır.")
-    set_auto(clip_ok)
-    cap_lbl.config(text="Pano %s · Kısayol %s · Tepsi %s · Tekrar-kopya %s" % (
-        "✓" if clip_ok else "✗",
-        "✓" if keyboard else "✗ (pynput yok)",
-        "✓" if icon is not None else "✗",
-        "✓" if agent.counter else "✗"))
+        gui.flash("pyperclip yok — pip install pyperclip pynput ile kur.", "warn")
+    set_auto(clip_ok, quiet=True)
+    set_caps([("Pano", clip_ok), ("Kısayol", bool(keyboard)), ("Tepsi", icon is not None),
+              ("Tekrar-kopya", bool(agent.counter))])
     if not keyboard:
-        gui.flash("Kısayollar kapalı (pynput yok) — yukarıdaki düğmeyle aç/kapat. Kurmak için: pip install pynput")
+        gui.flash("Kısayollar kapalı (pynput yok) — anahtar yine çalışır", "warn")
     elif clip_ok:
-        gui.flash("Oto-izle AÇIK — bir log kopyala, maskeli hali panoya hazır olur.")
+        gui.flash("Hazır — bir log kopyala, maskeli hali panoya gelsin.", "ok")
     legacy = agent.mapper.legacy_count()
     if legacy:
-        gui.flash("Defterde eski formatta %d kayıt var — temiz başlangıç için Defter sekmesinden 'Sıfırla' önerilir." % legacy)
+        gui.flash("Eski formatta %d kayıt var — Defter'den bir kez Sıfırla" % legacy, "warn")
 
     threading.Thread(target=agent.watch_loop, daemon=True).start()
     root.mainloop(); agent.stop()
 
 
 def main():
+    args = sys.argv[1:]
+    if args[:1] == ["--export-icon"]:
+        path = args[1] if len(args) > 1 else "anonim_ajan.ico"
+        print("Simge yazıldı:", export_icon(path)); return
     if pyperclip is None:
-        print("Uyarı: pyperclip yok — pano/kısayol çalışmaz, ama kutu akışı yine çalışır.\n"
+        print("Uyarı: pyperclip yok — pano/kısayol çalışmaz, ama kutular yine çalışır.\n"
               "  pip install pyperclip pynput")
     agent = Agent()
     try:
         run_gui(agent)
+    except SystemExit:
+        raise
     except Exception as ex:
-        print("GUI başlatılamadı:", ex)
+        # Konsolsuz exe'de hata görünmez ve süreç arka planda asılı kalabilir:
+        # hatayı dosyaya yaz, ekranda göster, süreci tamamen kapat.
+        import traceback
+        detail = traceback.format_exc()
+        log = os.path.join(os.path.expanduser("~"), "anonim_ajan_hata.log")
+        try:
+            with open(log, "w", encoding="utf-8") as f: f.write(detail)
+        except Exception:
+            log = None
+        print(detail)
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            r = tk.Tk(); r.withdraw()
+            messagebox.showerror("Anonim Ajan açılamadı",
+                                 "%s\n\n%s" % (ex, ("Ayrıntılar: " + log) if log else ""))
+        except Exception:
+            pass
+        os._exit(1)
 
 
 if __name__ == "__main__":
