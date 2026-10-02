@@ -18,3 +18,4 @@ venv/
 Thumbs.db
 desktop.ini
 .DS_Store
+.pytest_cache/

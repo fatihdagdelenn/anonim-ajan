@@ -63,26 +63,54 @@ STORE = os.path.join(os.path.expanduser("~"), ".anonim_ajan.json")
 # =====================================================================
 #
 #  Hassas değerler türünü söyleyen numaralı etiketlerle değiştirilir:
-#     10.10.10.20            → IP_1
-#     app01.sirket.com.tr    → HOST_1.DOMAIN_1     (aynı alan adı → aynı DOMAIN_n)
-#     admin@sirket.com.tr    → MAIL_1
-#     datasource jboss       → datasource DS_1
-#     password=Gizli123      → password=PAROLA_1   (diske yazılmaz)
+#     10.10.10.20               → IP_PRIV_1       (RFC1918; genel adres → IP_PUB_n)
+#     10.10.10.0/24             → IP_PRIV_2/24    (/prefix korunur)
+#     app01.sirket.com.tr       → HOST_1.DOMAIN_1 (aynı alan adı → aynı DOMAIN_n)
+#     kemal@web01:~/ithub$      → USER_1@HOST_2:~/PROJE_1$
+#     ithub-web-1 (konteyner)   → PROJE_1-web-1   (compose adı: proje kısmı gizlenir)
+#     br-3f2a1b4c5d6e           → IFACE_1         (eth0, ens192, docker0, veth… dokunulmaz)
+#     password=Gizli123         → password=PAROLA_1   (diske yazılmaz)
 #
 #  Etiketler bilerek <...> içinde DEĞİL: AI arayüzleri <url1> gibi şeyleri HTML
-#  sanıp yutabiliyor, XML config içinde de etiket gibi görünüyor. IP_1 biçimi
-#  Markdown, XML, JSON ve kabukta bozulmadan kalır; gerçek logda da geçmez.
+#  sanıp yutabiliyor, XML config içinde de etiket gibi görünüyor.
+#
+#  Tespit sırası: önce BAĞLAM (prompt, ip a, docker ps, /etc/hosts, journal,
+#  bağlantı dizgisi…) — bu yapılar bir değerin ne olduğunu kesin söyler. Sonra
+#  genel kalıplar (IP, alan adı, rakam içeren sunucu adı…). Bir kez öğrenilen
+#  kullanıcı / proje / konteyner adları sonraki mesajlarda da aynı etiketi alır.
 
-# Etiket önekleri (uzunlar önce — "IPV6" "IP"den önce denenmeli)
-TOKEN_PREFIXES = ["KULLANICI", "ANAHTAR", "PAROLA", "DOMAIN", "SCHEMA", "TARIH", "TOKEN",
-                  "IPV6", "HOST", "MAIL", "JNDI", "AYAR", "OZEL", "MAC", "IP", "DS", "DB"]
+import ipaddress
+
+# Sistem / servis hesapları maskelenmez (AI için anlamlı, hassas değil).
+# Bunları da gizlemek istersen True yap.
+MASK_SYSTEM_USERS = False
+SYSTEM_USERS = set("""root admin administrator sa sys system postgres mysql mariadb oracle redis
+    mongodb www-data nginx apache httpd nobody daemon bin sync games man lp mail news uucp proxy
+    backup list irc gnats systemd-network systemd-resolve systemd-timesync messagebus syslog sshd
+    ubuntu debian centos ec2-user fedora pi vagrant jboss wildfly tomcat jenkins gitlab-runner git
+    docker sudo wheel users staff adm deploy ansible guest test user operator elasticsearch kibana
+    grafana prometheus rabbitmq zookeeper kafka hdfs yarn hive spark nagios zabbix""".split())
+
+# Etiket önekleri. Eskiler (KULLANICI, IP, IPV6) geriye dönük geri çevirme için listede.
+TOKEN_PREFIXES = ["IPV6_PRIV", "IPV6_PUB", "KULLANICI", "CONTAINER", "IP_PRIV", "IP_PUB", "ANAHTAR",
+                  "PAROLA", "DOMAIN", "SCHEMA", "TARIH", "TOKEN", "IFACE", "PROJE", "IPV6", "HOST",
+                  "MAIL", "JNDI", "AYAR", "OZEL", "USER", "MAC", "IP", "DS", "DB"]
 # Önünde harf/rakam olmasın (MYDB_1 etiket değil); arkasında rakam olmasın (IP_1 ≠ IP_10).
-# "ada_IP_1" ve "TARIH_1T23:00" gibi bitişik kullanımlar da tanınır.
-TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(?:%s)_\d+(?!\d)" % "|".join(TOKEN_PREFIXES))
+TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(?:%s)_\d+(?!\d)" %
+                      "|".join(sorted(TOKEN_PREFIXES, key=len, reverse=True)))
 def is_token(s): return bool(TOKEN_RE.fullmatch(s or ""))
 
-TYPE_PREFIX = {"ipv4": "IP", "ipv6": "IPV6", "mac": "MAC", "hostname": "HOST", "domain": "DOMAIN",
-               "email": "MAIL", "date": "TARIH", "custom": "OZEL"}
+TYPE_PREFIX = {"mac": "MAC", "hostname": "HOST", "domain": "DOMAIN", "email": "MAIL", "date": "TARIH",
+               "custom": "OZEL", "user": "USER", "container": "CONTAINER", "project": "PROJE",
+               "iface": "IFACE"}
+
+# Çakışmada büyük olan kazanır (aynı başlangıçta).
+PRIO = {"secret": 7, "custom": 6, "email": 5, "container": 4.8, "project": 4.7, "iface": 4.6,
+        "user": 4.5, "domain": 4, "date": 3.5, "ipv6": 3, "ipv4": 2, "mac": 1, "hostname": 0.5,
+        "config": 0.3}
+P_CONTEXT = 6.5      # prompt / /etc/hosts gibi kesin bağlamlar
+P_SPREAD  = 0.6      # önceden öğrenilmiş adların metnin başka yerlerinde geçmesi
+P_ENTROPY = 0.45     # yedek: yüksek entropili dizgi
 
 PAT = {
     "ipv4":  re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?![\d.])"),
@@ -91,9 +119,40 @@ PAT = {
     "domain":re.compile(r"(?<![A-Za-z0-9.@\-])(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}(?![A-Za-z0-9\-])"),
     "mac":   re.compile(r"(?<![0-9A-Fa-f:\-])(?:[0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f:\-])"),
 }
-# Çakışmada büyük olan kazanır. Tarih IP/IPv6/MAC/hostname'den önce gelir: "10.10.2026" asla IP sanılmaz.
-PRIO = {"secret": 7, "custom": 6, "email": 5, "domain": 4, "date": 3.5, "ipv6": 3, "ipv4": 2,
-        "mac": 1, "hostname": 0.5, "config": 0}
+
+# ---- özel / kamusal adresler ----
+_PRIV_NETS = [ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",          # RFC1918
+    "100.64.0.0/10", "169.254.0.0/16",                         # CGNAT, link-local
+    "fc00::/7", "fe80::/10")]                                  # IPv6 ULA, link-local
+PUBLIC_DNS = {"8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "208.67.222.222", "208.67.220.220"}
+
+def _ip_prefix(ip, v6=False):
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return "IPV6" if v6 else "IP"
+    base = "IPV6" if a.version == 6 else "IP"
+    priv = any(a in n for n in _PRIV_NETS if n.version == a.version)
+    return base + ("_PRIV" if priv else "_PUB")
+
+def _benign_ip(ip):
+    """127.0.0.0/8, 0.0.0.0, ::1, ::, çok yayın, maskeler (255.255.255.0) ve kamusal DNS — maskelenmez."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if a.is_loopback or a.is_unspecified or a.is_multicast: return True
+    if a.version == 6: return a.is_reserved
+    return ip.startswith("255.") or ip in PUBLIC_DNS
+
+# Herkesin bildiği ağ blokları — "allow 10.0.0.0/8" hassas değil
+WELL_KNOWN_NETS = {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
+                   "127.0.0.0/8", "0.0.0.0/0", "224.0.0.0/4", "240.0.0.0/4", "::/0", "fc00::/7",
+                   "fe80::/10", "ff00::/8"}
+
+BENIGN_MACS = {"00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"}
+def _benign_mac(m): return m.lower().replace("-", ":") in BENIGN_MACS
 
 # ---- tarih ----
 _D = r"(?:0?[1-9]|[12]\d|3[01])"
@@ -116,25 +175,46 @@ DATE_RE = re.compile(r"(?<!\d)(?<!\d[.\-/])(?:" + _DATE_BODY + r")(?!\d|[.\-/]\d
 _PW_CORE  = r"passwd|password|passwort|passphrase|pwd|şifre|sifre|parola"
 _TOK_CORE = (r"client[_\-]?secret|secret[_\-]?key|private[_\-]?key|access[_\-]?key|api[_\-]?key|"
              r"apikey|access[_\-]?token|auth[_\-]?token|refresh[_\-]?token|credentials?|secret|token")
+_KV_SEP   = r"[\"']?[ \t]*(?::=|=>|->|[:=>])[ \t]*"
+_KV_VAL   = r"(?:(?P<q>[\"'])(?P<v1>[^\"'\r\n]{1,256})(?P=q)|(?P<v2>[^\s\"'<>,;&)}\]]{1,256}))"
 SECRET_KV_RE = re.compile(
-    r"(?<![\w.\-/])(?P<key>[\w.\-]*?(?P<core>" + _PW_CORE + "|" + _TOK_CORE + r")[\w.\-çğıöşüÇĞİÖŞÜ]*|pass)"
-    r"[\"']?[ \t]*(?::=|=>|->|[:=>])[ \t]*"
-    r"(?:(?P<q>[\"'])(?P<v1>[^\"'\r\n]{1,256})(?P=q)|(?P<v2>[^\s\"'<>,;&)}\]]{1,256}))", re.I)
+    r"(?<![\w.\-/])(?P<key>[\w.\-]*?(?P<core>" + _PW_CORE + "|" + _TOK_CORE + r")[\w.\-çğıöşüÇĞİÖŞÜ]*"
+    r"|[\w.\-]*[_.\-](?P<suf>key|pass)|pass)" + _KV_SEP + _KV_VAL, re.I)
+# anahtar adı bunlarla bitiyorsa değer gizli değil, üst bilgi: token_url, password_min_length…
+SECRET_KEY_META = ("file", "path", "dir", "url", "uri", "length", "len", "size", "count", "ttl",
+                   "timeout", "expiry", "expires", "expiration", "min", "max", "policy", "type",
+                   "name", "id", "enabled", "required", "header", "prefix", "field", "param",
+                   "algorithm", "alg", "rotation", "store", "location", "hint", "age", "format",
+                   "mode", "method", "scope", "lifetime", "interval", "reset", "changed")
+SECRET_KEY_NOT = ("primary_key", "foreign_key", "sort_key", "partition_key", "public_key", "hash_key",
+                  "range_key", "cache_key", "row_key", "pubkey", "public-key", "publickey")
 SECRET_CLI_RE = re.compile(r"(?<![\w\-])--?(?P<core>password|passwd|pass|pwd|token|api-key|secret)"
                            r"[ =](?P<v>[^\s\"']{2,256})", re.I)
-SECRET_URL_RE = re.compile(r"\b[a-z][a-z0-9+.\-]*://(?P<user>[^\s:/@]{1,64}):(?P<pw>[^\s/@]{1,128})@", re.I)
+CURL_USER_RE = re.compile(r"\bcurl\b[^\n|;]*?\s(?:-u|--user)\s+[\"']?(?P<u>[^:\s'\"]+):(?P<p>[^\s'\"]+)")
 SECRET_BEARER_RE = re.compile(r"\b(?:Bearer|Basic)\s+(?P<v>[A-Za-z0-9\-._~+/]{8,}=*)")
-SECRET_PEM_RE = re.compile(r"-----BEGIN ([A-Z ]*)PRIVATE KEY-----[\s\S]+?-----END \1PRIVATE KEY-----")
+SECRET_PEM_RE = re.compile(r"-----BEGIN ([A-Z ]*)PRIVATE KEY-----\r?\n(?P<body>[\s\S]+?)\r?\n-----END \1PRIVATE KEY-----")
 SECRET_PATTERNS = [   # biçiminden tanınan anahtarlar
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),                                  # AWS erişim anahtarı
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),                         # AWS erişim anahtarı
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"),                        # GitHub token
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"),                      # GitHub ince taneli token
+    re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),                         # GitLab
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}\b"),                     # Slack
+    re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"),                            # Google API
+    re.compile(r"\b[sr]k_(?:live|test)_[0-9A-Za-z]{16,}\b"),              # Stripe
+    re.compile(r"\bhvs\.[A-Za-z0-9_\-]{20,}\b"),                          # HashiCorp Vault
     re.compile(r"\beyJ[\w\-]{8,}\.[\w\-]{8,}\.[\w\-]{8,}\b"),            # JWT
 ]
 SECRET_SKIP = {"null", "none", "nil", "true", "false", "undefined", "empty", "yes", "no", "required",
-               "optional", "string", "hidden", "masked", "redacted"}
+               "optional", "string", "hidden", "masked", "redacted", "bearer", "basic"}
 
-def _secret_prefix(core):
-    c = (core or "").lower()
+# ---- bağlantı dizgisi: scheme://kullanıcı:parola@sunucu:port/veritabanı ----
+CONN_RE = re.compile(r"\b(?P<scheme>[a-z][a-z0-9+.\-]*)://(?:(?P<user>[^\s:/@'\"]*)(?::(?P<pw>[^\s/@'\"]*))?@)?"
+                     r"(?P<host>\[[0-9A-Fa-f:]+\]|[^\s/:?#,;'\"@\[\]]+)(?::\d+)?(?:/(?P<db>[A-Za-z_][\w\-]*))?", re.I)
+DB_SCHEMES = {"postgres", "postgresql", "mysql", "mariadb", "mongodb", "mongodb+srv", "sqlserver", "mssql",
+              "oracle", "db2", "clickhouse", "cockroachdb", "redshift", "snowflake", "cassandra"}
+
+def _secret_prefix(core=None, suf=None):
+    c = (core or suf or "").lower()
     if re.fullmatch(_PW_CORE + "|pass", c): return "PAROLA"
     if "private" in c: return "ANAHTAR"
     return "TOKEN"
@@ -147,14 +227,138 @@ def _secret_ok(v, prefix):
     if prefix == "TOKEN" and v.isdigit(): return False                      # max_tokens: 4096
     return True
 
-# ---- hostname ----
-HOST_BLOCK = set(["md5","md2","sha1","sha2","sha3","sha224","sha256","sha384","sha512",
-    "crc32","adler32","base64","base32","utf8","utf16","utf32","latin1","iso88591","x8664",
-    "amd64","arm64","win32","win64","http2","http3","tls10","tls11","tls12","tls13","ssl2",
-    "ssl3","ipv4","ipv6","oauth2","ec2","s3","k8s","i18n","l10n","a11y","p2p","log4j","ext4",
-    "fat32","ntfs","rfc822","log4j2","tlsv1","tlsv12","tlsv13","sslv3","utf8mb4","h2","md4","ripemd160"])
+def _entropy(s):
+    from math import log2
+    n = len(s); freq = {}
+    for ch in s: freq[ch] = freq.get(ch, 0) + 1
+    return -sum(c / n * log2(c / n) for c in freq.values())
 
-KW_RE  = re.compile(r"\b(?:hostname|nodename|node|computername|computer|dnsname|host|cn)\b\s*[:=]\s*[\"']?([A-Za-z][A-Za-z0-9\-]{1,62})[\"']?", re.I)
+ENTROPY_RE = re.compile(r"(?<![\w+/=\-.])[A-Za-z0-9+/_\-]{20,}={0,2}(?![\w+/=\-.])")
+def _looks_random(s):
+    """Yedek gizli bilgi tespiti: 20+ karakter, büyük+küçük harf+rakam, yüksek entropi.
+    Onaltılık kimlikler (konteyner ID, sha256, git commit) ve CamelCase adlar hariç."""
+    if s.startswith("/") or s.count("/") > 2 or is_token(s): return False
+    if re.fullmatch(r"[0-9a-fA-F\-]+", s): return False
+    if not (re.search(r"[a-z]", s) and re.search(r"[A-Z]", s) and re.search(r"\d", s)): return False
+    if re.search(r"(?:[A-Z][a-z]{2,}){3,}", s): return False                # AbstractConnectionFactory9
+    return _entropy(s) >= 3.6
+
+# ---- kullanıcı adları ----
+_USER_VAL = (r"(?:(?P<q>[\"'])(?P<v1>[^\"'\r\n<>()]{1,64})(?P=q)|"
+             r"(?P<v2>[^\s\"'<>,;&(){}\[\]|]{1,64}))")
+USER_KV_RE = re.compile(
+    r"(?<![\w.\-/])(?P<key>[\w.\-]*?(?:user(?:[_\-]?name)?|login|logname|user[ _\-]?id|uid))" + _KV_SEP + _USER_VAL, re.I)
+USER_ID_RE  = re.compile(r"(?<![\w])(?:uid|gid|groups|euid)=(?:\d+\([\w.\-]+\),?)+")
+USER_ID_ONE = re.compile(r"\d+\((?P<u>[\w.\-]+)\)")
+USER_CLI_RE = re.compile(r"(?<![\w\-])--(?:user|username|login)(?:=|\s+)[\"']?(?P<v>[\w.\-@]+)")
+USER_U_RE = re.compile(r"\b(?:mysql|mysqldump|mysqladmin|mariadb|psql|pg_dump|pg_dumpall|pg_restore|createdb|"
+                       r"dropdb|sudo|su|crontab|mongosh|mongo|redis-cli|sqlcmd|influx|(?:docker|podman)\s+(?:exec|run))"
+                       r"\b[^\n|;&]*?\s-[uU][ \t]*[\"']?(?P<v>[A-Za-z_][\w.\-@]*)")
+SSH_RE  = re.compile(r"\b(?:ssh|scp|sftp|rsync|ssh-copy-id|mosh)\b[^\n|;&]*?\s(?P<u>[A-Za-z_][\w.\-]*)@"
+                     r"(?P<h>[A-Za-z0-9][\w.\-]*)")
+HOME_RE = re.compile(r"(?:/home/|/Users/|[A-Za-z]:\\Users\\|\\\\Users\\\\)(?P<u>[A-Za-z_][\w.\-]*)")
+SSHD_RE = re.compile(r"\b(?:Accepted \w+ for|Failed \w+ for(?: invalid user)?|Invalid user|"
+                     r"session (?:opened|closed) for user|Disconnected from(?: invalid| authenticating)? user|"
+                     r"pam_unix\([^)]*\): [^\n]*? user)\s+(?P<u>[A-Za-z_][\w.\-]*)")
+SUDO_RE = re.compile(r"\bsudo(?:\[\d+\])?:\s+(?P<u>[A-Za-z_][\w.\-]*)\s+:")
+USER_SKIP = {"unknown", "invalid", "none", "null", "anonymous", "public", "default", "shared",
+             "all users", "everyone", "local", "remote", "true", "false"}
+
+# ---- shell prompt ----
+PROMPT_RE1 = re.compile(r"(?m)(?:^|(?<=[\s)\]]))(?P<u>[a-z_][\w.\-]{0,31})@(?P<h>[A-Za-z0-9][\w.\-]{0,62}):"
+                        r"(?P<d>[^\s$#]*)[$#](?=\s|$)")
+PROMPT_RE2 = re.compile(r"\[(?P<u>[a-z_][\w.\-]{0,31})@(?P<h>[A-Za-z0-9][\w.\-]{0,62})\s+(?P<d>[^\]\s]+)\]\s?[$#]")
+PROMPT_PS  = re.compile(r"(?m)^PS (?P<d>[A-Za-z]:\\[^>\n]*)>")
+# Bu dizinlerin altındaki adlar sistem/ürün dizinidir, proje sayılmaz (/var/lib/postgresql…)
+SYSTEM_PATHS = ("/var/lib", "/var/log", "/var/cache", "/var/spool", "/var/run", "/etc", "/usr", "/proc",
+                "/sys", "/dev", "/run", "/boot", "/lib", "/bin", "/sbin", "/tmp", "/snap", "/nix")
+DIR_CTX_RE = re.compile(r"\b(?:PWD|OLDPWD|working_dir|WorkingDir|workdir|project\.working_dir)[\"']?\s*[=:]\s*"
+                        r"[\"']?(?P<d>/[^\s\"';,]+)")
+DEPLOY_RE = re.compile(r"(?:Deployed|Undeployed|Replaced deployment|Starting deployment of|Stopped deployment|"
+                       r"runtime-name\s*:)\s*\\?\"(?P<p>[A-Za-z][\w\-]*?)\.(?:war|ear|jar|rar|sar)\\?\"")
+UPSTREAM_RE = re.compile(r"\bupstream\s+(?P<n>[A-Za-z][\w.\-]*)\s*\{")
+# Alt alan adı olarak çok yaygın, metnin geri kalanına yayılmayacak etiketler
+SUBDOMAIN_COMMON = set("""www mail smtp imap pop pop3 ftp sftp vpn portal intranet extranet api app apps
+    auth sso login cdn static assets img images media admin panel dev test stage staging prod beta
+    demo docs wiki git gitlab jenkins grafana kibana monitor status shop store blog news web ns ns1 ns2
+    mx owa webmail remote secure cloud files support help crm erp hr db sql ldap ad dc proxy gateway
+    registry repo nexus harbor console""".split())
+def _label_spreads(lbl):
+    low = lbl.lower()
+    return (len(lbl) >= 4 and low not in SUBDOMAIN_COMMON and low not in COMMON_WORDS
+            and low not in HOST_PRODUCT and not re.search(r"\d", lbl))
+
+STD_DIRS = set("""~ / root home etc var opt srv tmp usr local bin sbin lib lib64 log logs data app apps
+    src code projects project proje projeler work workspace repos repo git docker compose deploy backup
+    backups www html conf config configs nginx jboss wildfly standalone configuration deployments
+    Desktop Downloads Documents Masaüstü İndirilenler Belgeler build dist target node_modules venv .venv
+    scripts test tests docs mnt media run dev proc sys boot cache spool mail share include system32
+    Windows Users sites-enabled sites-available conf.d ssl certs secrets volumes""".split())
+
+# ---- syslog / journal: "Oct 01 09:12:01 web01 sshd[1234]:" ----
+SYSLOG_RE = re.compile(r"(?m)^(?:[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}|"
+                       r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s+"
+                       r"(?P<h>[A-Za-z0-9][\w.\-]{0,62})\s+(?P<p>[A-Za-z][\w\-./@]*)(?:\[\d+\])?:\s")
+LOG_LEVELS = {"INFO", "WARN", "WARNING", "ERROR", "DEBUG", "TRACE", "FATAL", "NOTICE", "CRIT",
+              "CRITICAL", "SEVERE", "FINE", "FINER", "FINEST", "ALERT", "EMERG", "ERR"}
+
+# ---- /etc/hosts satırı: "10.10.10.20  db01.sirket.com.tr db01" ----
+HOSTS_RE = re.compile(r"(?m)^[ \t]*(?P<ip>(?:\d{1,3}\.){3}\d{1,3}|[0-9A-Fa-f:]*:[0-9A-Fa-f:]+)[ \t]+"
+                      r"(?P<names>[A-Za-z0-9][\w.\-]*(?:[ \t]+[A-Za-z0-9][\w.\-]*){0,7})[ \t]*(?:#.*)?$")
+HOST_KEEP = {"localhost", "localhost.localdomain", "localdomain", "broadcasthost", "ip6-localhost",
+             "ip6-loopback", "ip6-localnet", "ip6-mcastprefix", "ip6-allnodes", "ip6-allrouters",
+             "ip6-allhosts", "host.docker.internal", "gateway.docker.internal"}
+
+# ---- ağ arayüzleri ----
+IFACE_STD_RE = re.compile(r"(?:lo|eth\d+|ens\d+(?:f\d+)?(?:np\d+)?|enp\d+s\d+(?:f\d+)?(?:np\d+)?|eno\d+|"
+                          r"enx[0-9a-f]{12}|em\d+|p\d+p\d+|wlan\d+|wlp\d+s\d+|wlo\d+|docker\d+|veth[0-9a-f]+|"
+                          r"virbr\d+(?:-nic)?|tun\d+|tap\d+|wg\d+|bond\d+|team\d+|cni\d+|flannel\.\d+|"
+                          r"cali[0-9a-f]+|tunl\d+|vxlan\.calico|vxlan\d*|kube-ipvs\d+|kube-bridge|br\d+|if\d+|"
+                          r"ip6tnl\d+|sit\d+|gre\d+|gretap\d+|erspan\d+|ip_vti\d+|ip6_vti\d+|ip6gre\d+|"
+                          r"lxcbr\d+|lxdbr\d+|podman\d+|cilium_\w+|nodelocaldns|dummy\d+|ovs-system|br-int|"
+                          r"br-ex|ens\d+\.\d+|eth\d+\.\d+)", re.I)
+def is_std_iface(n): return bool(IFACE_STD_RE.fullmatch(n or ""))
+IFACE_LINE_RE = re.compile(r"(?m)^\d+:\s+(?P<i>[^\s:@]+)(?:@(?P<peer>[^\s:]+))?:\s+<")
+IFCONFIG_RE   = re.compile(r"(?m)^(?P<i>[A-Za-z][\w.\-]*?):?\s+(?:flags=|Link encap)")
+IFACE_REF_RE  = re.compile(r"\b(?:dev|master|iif|oif|iface|interface|vlan-raw-device|bridge_ports)\s+"
+                           r"(?P<i>[A-Za-z][\w.\-]*)")
+BRIDGE_RE     = re.compile(r"\bbr-[0-9a-f]{12}\b")
+
+# ---- konteyner / compose projesi ----
+DOCKER_PS_HDR = re.compile(r"(?m)^CONTAINER ID\s+IMAGE\s+.*\bNAMES[ \t]*$")
+CONTAINER_NAME_RE = re.compile(r"(?:--name[ =][\"']?|container_name:[ \t]*[\"']?|\"Name\"\s*:\s*\"/)"
+                               r"(?P<n>[A-Za-z0-9][\w.\-]*)")
+DOCKER_CMD_RE = re.compile(
+    r"\b(?:docker|podman)\s+(?:container\s+)?(?:logs|exec|inspect|restart|stop|start|rm|kill|attach|top|"
+    r"stats|port|cp|update|wait|pause|unpause|rename|commit|diff|export)\b"
+    r"(?:\s+(?:(?:--(?:tail|since|until|user|env|workdir|env-file|format|time|signal|detach-keys)|-[nuew])"
+    r"(?:=|\s+)\S+|-{1,2}[\w\-]+(?:=\S+)?))*\s+(?P<n>[A-Za-z0-9][\w.\-]*)")
+COMPOSE_PROJECT_RE = re.compile(
+    r"(?:com\.docker\.compose\.project[\"']?\s*[:=]\s*[\"']?|COMPOSE_PROJECT_NAME[ \t]*=[ \t]*[\"']?|"
+    r"\bdocker[ \-]compose\b[^\n]*?\s(?:-p|--project-name)[ =][\"']?)(?P<p>[A-Za-z0-9][\w.\-]*)")
+COMPOSE_NAME_RE = re.compile(r"^(?P<p>[A-Za-z0-9][\w.\-]*?)[-_](?P<s>[a-z0-9][a-z0-9.]*)[-_](?P<n>\d+)$")
+DOCKER_WORDS = {"bash", "sh", "zsh", "ash", "python", "node", "java", "psql", "mysql", "redis-cli",
+                "cat", "ls", "env", "printenv", "true", "false"}
+
+# Yayılmayacak (metnin her yerinde aranmayacak) genel kelimeler
+COMMON_WORDS = set("""app api web www db data test prod dev stage staging main master default
+    backend frontend server client service worker proxy cache mail admin user users home public
+    private local remote config docs src lib bin log logs tmp root""".split())
+
+# ---- hostname ----
+HOST_BLOCK = set(["md5","md2","md4","sha1","sha2","sha3","sha224","sha256","sha384","sha512","ripemd160",
+    "crc32","adler32","base64","base32","utf8","utf16","utf32","utf8mb4","latin1","iso88591","x8664",
+    "amd64","arm64","aarch64","armv7l","i386","i686","ppc64le","s390x","win32","win64","http2","http3",
+    "h2","h2c","tls10","tls11","tls12","tls13","tlsv1","tlsv12","tlsv13","ssl2","ssl3","sslv3","ipv4",
+    "ipv6","ip4","ip6","inet4","inet6","icmp6","icmpv6","tcp4","tcp6","udp4","udp6","raw6","ssh1","ssh2",
+    "oauth2","ec2","s3","k8s","k3s","i18n","l10n","a11y","p2p","log4j","log4j2","ext2","ext3","ext4",
+    "fat32","ntfs","rfc822","x509","pkcs1","pkcs7","pkcs8","pkcs11","pkcs12","p12","ed25519","ed448",
+    "rsa1024","rsa2048","rsa4096","nistp256","nistp384","nistp521","secp256r1","secp384r1","prime256v1",
+    "aes128","aes192","aes256","chacha20","poly1305","overlay2","cgroup2","cgroupv2","netns0","el7",
+    "el8","el9","fc38","fc39","fc40","win10","win11","dotnet6","dotnet8","node18","node20","node22"])
+
+KW_RE  = re.compile(r"\b(?:hostname|nodename|node|computername|computer|dnsname|host|cn)\b\s*[:=]\s*[\"']?"
+                    r"([A-Za-z][A-Za-z0-9\-]{1,62})[\"']?", re.I)
 TOK_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*\b")
 
 # "thread-12", "pool-3", "worker-7", "port8080"… hostname değil — log gürültüsü
@@ -163,13 +367,14 @@ HOST_NOISE = {"thread","threads","pool","worker","workers","task","tasks","exec"
     "tx","timer","scheduler","async","default","eventloop","loop","reactor","line","row","col",
     "page","step","item","port","pid","tid","build","rev","release","version","ver","attempt",
     "retry","try","phase","stage","part","chunk","index","idx","slot","queue","listener",
-    "handler","consumer","producer","partition","offset","epoch","gen","generation"}
-# ürün + sürüm ("java17", "jdk11", "postgres14", "rhel8") hostname değil
+    "handler","consumer","producer","partition","offset","epoch","gen","generation","pts","tty"}
+# ürün adıyla başlayanlar ("java17", "jboss-eap-7", "java-17-openjdk-amd64") hostname değil
 HOST_PRODUCT = {"java","jdk","jre","jvm","openjdk","jboss","wildfly","eap","tomcat","spring",
     "hibernate","postgres","postgresql","pg","mysql","mariadb","mssql","oracle","ora","redis",
     "kafka","nginx","apache","httpd","centos","rhel","el","ubuntu","debian","windows","win",
     "python","py","npm","tls","tlsv","ssl","sslv","http","https","utf","iso","cp","sha",
-    "md","ipv","rfc","cve","jsr","jep","log","slf","logback","junit","maven","gradle","v"}
+    "md","ipv","rfc","cve","jsr","jep","log","slf","logback","junit","maven","gradle","v",
+    "alpine","node","golang","go","php","ruby","dotnet","kernel","linux","fedora","rocky","alma"}
 
 # Gerçek alan adı TLD'leri — "org.jboss.as.controller", "server.log", "standalone.xml",
 # "AbstractPool.java" gibi paket/dosya adlarının DNS sanılmasını önler.
@@ -179,15 +384,17 @@ TLDS = set("""com net org io co info biz tr uk de eu us gov edu mil int local la
     br mx za arpa""".split())
 TWO_LEVEL = set("""com.tr net.tr org.tr gov.tr edu.tr bel.tr k12.tr gen.tr av.tr bbs.tr
     co.uk org.uk ac.uk gov.uk com.au net.au co.jp co.kr com.br com.cn co.za co.in""".split())
-# Genel/kamusal alan adları — maskelemeye gerek yok (AI'ın cevabında da sık geçer)
+# Genel/kamusal alan adları ve container registry'leri — maskelemeye gerek yok
 BENIGN_DOMAINS = set("""example.com example.org example.net localhost.localdomain github.com
     gitlab.com stackoverflow.com google.com microsoft.com apple.com redhat.com oracle.com
-    jboss.org wildfly.org apache.org python.org pypi.org npmjs.com maven.org spring.io openai.com
-    anthropic.com claude.ai chatgpt.com ubuntu.com debian.org centos.org kernel.org mozilla.org
-    w3.org ietf.org wikipedia.org docker.com docker.io kubernetes.io postgresql.org mysql.com
-    mariadb.org cloudflare.com letsencrypt.org xmlsoap.org jcp.org sun.com java.com
-    openjdk.org hibernate.org eclipse.org jakarta.ee""".split())
-BENIGN_IPS = {"127.0.0.1","0.0.0.0","255.255.255.255","8.8.8.8","8.8.4.4","1.1.1.1","1.0.0.1"}
+    jboss.org wildfly.org apache.org python.org pypi.org npmjs.com npmjs.org maven.org spring.io
+    openai.com anthropic.com claude.ai chatgpt.com ubuntu.com debian.org centos.org kernel.org
+    mozilla.org w3.org ietf.org wikipedia.org docker.com docker.io kubernetes.io k8s.io ghcr.io
+    quay.io gcr.io pkg.dev postgresql.org mysql.com mariadb.org cloudflare.com letsencrypt.org
+    xmlsoap.org jcp.org sun.com java.com openjdk.org hibernate.org eclipse.org jakarta.ee
+    alpinelinux.org fedoraproject.org rockylinux.org almalinux.org golang.org nodejs.org
+    githubusercontent.com elastic.co hashicorp.com grafana.com prometheus.io nginx.org nginx.com
+    googleapis.com gstatic.com""".split())
 
 
 def _split_domain(d):
@@ -203,8 +410,9 @@ def _valid_domain(d):
     if any(low == b or low.endswith("." + b) for b in BENIGN_DOMAINS): return False
     return True
 
-def _benign_ip(ip):
-    return ip in BENIGN_IPS or ip.startswith("255.") or ip.startswith("0.")
+def _benign_domain(d):
+    low = d.lower()
+    return any(low == b or low.endswith("." + b) for b in BENIGN_DOMAINS)
 
 # ---- config anahtarları ----
 # Serbest anahtarlar: ayraçsız da olur ("datasource jboss")
@@ -214,50 +422,67 @@ CFG_FREE = ["datasource name","datasource","data source","data-source","jndi nam
 # Genel kelimeler: yalnızca açık ayraçla (":", "=", XML ">") — düz cümlede yanlış eşleşmesin
 CFG_STRICT = ["database","databasename","db name","db-name","dbname","db","schema","schema-name",
     "catalog","ds name","dsname","pool","servicename","service-name","sid","instance",
-    "instance-name","username","user name","user-name","user-id","userid","uid","realm",
-    "context root","context-root"]
+    "instance-name","realm","context root","context-root"]
 def _cfg_alt(keys):
     return "|".join(r"\s+".join(re.escape(p) for p in k.split()) for k in sorted(keys, key=len, reverse=True))
 _CFG_VAL = r"[ \t]*[\"']?([A-Za-z_][\w.\-\/:]*)[\"']?"
 CFG_FREE_RE   = re.compile(r"(?<!/)\b(" + _cfg_alt(CFG_FREE) + r")\b[ \t]*(?:[:=>]|:=|=>|->)?" + _CFG_VAL, re.I)
 CFG_STRICT_RE = re.compile(r"(?<!/)\b(" + _cfg_alt(CFG_STRICT) + r")\b[ \t]*(?:[:=>]|:=|=>|->)" + _CFG_VAL, re.I)
+# .env / ortam değişkeni biçimi: DB_NAME=appdb, POSTGRES_DB=appdb, MYSQL_DATABASE=appdb
+CFG_ENV_RE = re.compile(r"(?<![\w.\-/])(?P<key>[A-Za-z0-9_.\-]*?(?:db[_\-]?name|database(?:[_\-]?name)?|"
+                        r"postgres_db|mysql_database|schema(?:[_\-]?name)?|jndi[_\-]?name|"
+                        r"datasource(?:[_\-]?name)?))[\"']?[ \t]*[=:][ \t]*[\"']?(?P<v>[A-Za-z_][\w.\-\/:]*)", re.I)
 CFG_STOP = set(["is","are","was","were","be","been","the","a","an","of","for","to","in","on",
     "and","or","not","no","yes","true","false","null","none","name","value","type","this","that",
     "with","ise","olarak","bir","ve","veya","için","ile","adı","adi","ismi","olan","gibi"])
 CFG_STOP |= {k.lower() for k in CFG_FREE + CFG_STRICT}   # "<datasource jndi-name=…>" → "jndi-name" değer değil
+CFG_STOP |= {"jndi-name", "pool-name", "user-name", "enabled", "use-java-context", "statistics-enabled"}
 
 def _cfg_prefix(key):
-    """Config anahtarına göre etiket: datasource jboss → DS_1, user-name=sa → KULLANICI_1 …"""
-    k = re.sub(r"[\s_\-]", "", key.lower())
-    if k.startswith("jndi"): return "JNDI"
+    """Config anahtarına göre etiket: datasource jboss → DS_1, DB_NAME=appdb → DB_1 …"""
+    k = re.sub(r"[\s_\-.]", "", key.lower())
+    if "jndi" in k: return "JNDI"
     if "datasource" in k or k in ("dsname", "pool", "poolname", "connectionpool"): return "DS"
     if "schema" in k: return "SCHEMA"
-    if k.startswith(("user", "uid")): return "KULLANICI"
-    if k in ("database", "databasename", "databasename", "db", "dbname", "catalog", "sid",
-             "servicename", "instance", "instancename"): return "DB"
+    if any(x in k for x in ("database", "dbname", "postgresdb", "mysqldatabase")) or \
+       k in ("db", "catalog", "sid", "servicename", "instance", "instancename"): return "DB"
     return "AYAR"
 
 LABELS = {"ipv4":"IPv4","ipv6":"IPv6","domain":"DNS","email":"E-POSTA","mac":"MAC",
-          "hostname":"HOST","config":"CONFIG","secret":"PAROLA","date":"TARİH","custom":"ÖZEL"}
-ALL_TYPES = ("ipv4","ipv6","domain","email","mac","hostname","config","secret","date","custom")
+          "hostname":"HOST","user":"USER","container":"DOCKER","project":"PROJE","iface":"IFACE",
+          "config":"CONFIG","secret":"PAROLA","date":"TARİH","custom":"ÖZEL"}
+ALL_TYPES = ("ipv4","ipv6","domain","hostname","mac","iface","email","user","container",
+             "config","secret","date","custom")
 # Tarihler varsayılan olarak yalnızca TANINIR (IP sanılmaz) ama maskelenmez: zaman çizelgesi
 # hata ayıklamak için gerekli. İstenirse "TARİH" seçeneği açılır → TARIH_1.
 DEFAULT_OFF = {"date"}
 def default_opts(): return {t: t not in DEFAULT_OFF for t in ALL_TYPES}
+OPT_OF = {"project": "container"}          # proje adları DOCKER seçeneğine bağlı
 
+
+def _user_ok(v):
+    if not v or len(v) < 2 or v.isdigit() or is_token(v): return False
+    low = v.lower()
+    if low in USER_SKIP or "/" in v or "$" in v or "{" in v: return False
+    if low in SYSTEM_USERS and not MASK_SYSTEM_USERS: return False
+    return True
+
+def _host_label_ok(v):
+    if not v or len(v) < 2 or is_token(v) or v.isdigit(): return False
+    low = v.lower()
+    if low in HOST_KEEP or low in HOST_BLOCK or v.upper() in LOG_LEVELS or is_std_iface(v): return False
+    if re.fullmatch(r"[0-9a-f]{12}|[0-9a-f]{64}", low): return False          # konteyner ID
+    return True
 
 def _looks_like_host(tok):
     if len(tok) < 3 or len(tok) > 63: return False
     if not re.search(r"\d", tok): return False
     low = tok.lower()
-    if low.replace("-","") in HOST_BLOCK: return False
+    if low.replace("-","") in HOST_BLOCK or low in HOST_KEEP or is_std_iface(tok): return False
+    if re.search(r"ipv[46]|ip6|inet6", low): return False                  # GlobalIPv6Address, ip6-localhost
     m = re.match(r"[a-z]+", low)
     first = m.group(0) if m else ""
-    if first in HOST_NOISE: return False                                   # thread-12, pool-3
-    if first in HOST_PRODUCT and re.fullmatch(r"[a-z]+[-_]?v?\d+(?:[.\-_]\d+)*[a-z]?", low):
-        return False                                                       # java17, rhel8
-    if first in HOST_PRODUCT and re.fullmatch(r"[a-z]+(?:-[a-z]+)*-v?\d+", low):
-        return False                                                       # jboss-eap-7, postgresql-14
+    if first in HOST_NOISE or first in HOST_PRODUCT: return False          # thread-12, java-17-openjdk
     if not re.search(r"[a-z]", tok) and re.search(r"\d{4,}", tok):
         return False                                                       # WFLYCTL0013, ORA-00942
     if re.fullmatch(r"[0-9a-f\-]{8,}", low): return False                  # hash / UUID parçası
@@ -267,18 +492,25 @@ def _looks_like_host(tok):
 def _bounded(v):
     return re.compile(r"(?<![A-Za-z0-9._\-\/])" + re.escape(v) + r"(?![A-Za-z0-9_\-\/]|\.[A-Za-z0-9])")
 
+def _spread_re(v):
+    """Öğrenilmiş adlar: kenarında harf/rakam olmasın; - _ . / serbest (ithub-web-1, /home/kemal)."""
+    return re.compile(r"(?<![A-Za-z0-9])" + re.escape(v) + r"(?![A-Za-z0-9])")
+
 
 class Mapper:
-    """Gerçek ↔ etiket defteri. Parola/anahtar/token eşleşmeleri yalnızca bellekte tutulur."""
-    def __init__(self):
+    """Gerçek ↔ etiket defteri. Parola/anahtar/token eşleşmeleri yalnızca bellekte tutulur.
+    store=None → diske hiç dokunmaz (testler için)."""
+    def __init__(self, store="__default__"):
+        self.store = STORE if store == "__default__" else store
         self.lock = threading.RLock()
         self._reset()
         self.custom_terms = []
         self.load()
 
     def _reset(self):
-        self.entries = []          # [{real, fake, type, secret?}]
+        self.entries = []          # [{real, fake, type, secret?, prop?}]
         self.real_to_fake = {}     # gerçek → etiket (diske yazılır)
+        self.by_real = {}          # gerçek → defter kaydı
         self.secret_map = {}       # gerçek parola → etiket (yalnızca bellek)
         self.tok = {}              # etiket → gerçek
         self.counters = {}         # önek → son numara
@@ -289,120 +521,294 @@ class Mapper:
         self.counters[prefix] = n
         return "%s_%d" % (prefix, n)
 
-    def _register(self, real, typ, prefix, secret=False):
+    def _register(self, real, typ, prefix, secret=False, prop=False):
         m = self.secret_map if secret else self.real_to_fake
-        if real in m: return m[real]
+        if real in m:
+            if prop and not secret and real in self.by_real:
+                self.by_real[real]["prop"] = True            # sonradan bağlamla doğrulandı → yay
+            return m[real]
         t = self._token(prefix)
         m[real] = t; self.tok[t] = real
         e = {"real": real, "fake": t, "type": typ}
         if secret: e["secret"] = True
+        if prop: e["prop"] = True
         self.entries.append(e)
+        if not secret: self.by_real[real] = e
         return t
 
-    def _get_fake(self, value, typ, prefix=None):
+    def _get_fake(self, value, typ, prefix=None, prop=False):
         if typ == "domain":
             subs, base = _split_domain(value)
-            return ".".join([self._register(s, "hostname", "HOST") for s in subs] +
+            return ".".join([self._register(s, "hostname", "HOST", prop=_label_spreads(s)) for s in subs] +
                             [self._register(base, "domain", "DOMAIN")])
+        if typ in ("ipv4", "ipv6"):
+            return self._register(value, typ, _ip_prefix(value, typ == "ipv6"))
         if typ == "secret":
             return self._register(value, typ, prefix or "PAROLA", secret=True)
-        return self._register(value, typ, prefix or TYPE_PREFIX.get(typ, "AYAR"))
+        return self._register(value, typ, prefix or TYPE_PREFIX.get(typ, "AYAR"), prop=prop)
 
     # ---- tespit ----
     def _collect(self, text, opts=None):
-        """Hassas değerleri bulur: [(başlangıç, bitiş, değer, tür, önek)]. Mevcut etiketlere dokunmaz."""
+        """Hassas değerleri bulur: [(başlangıç, bitiş, değer, tür, önek, yay)]. Mevcut etiketlere dokunmaz."""
         opts = dict(default_opts(), **(opts or {}))
-        found = []
-        add = lambda s, e, v, t, p=None: found.append((s, e, v, t, p))
+        on = lambda typ: opts.get(OPT_OF.get(typ, typ), False)
+        found = []          # (s, e, v, typ, prefix, prio, prop)
+        learned = {}        # bu metinde bağlamdan öğrenilen adlar: değer → (tür, önek)
 
-        if opts.get("secret"):
+        def add(s, e, v, typ, prefix=None, prio=None, prop=False):
+            if not on(typ) or s >= e: return
+            found.append((s, e, v, typ, prefix, PRIO[typ] if prio is None else prio, prop))
+            if prop: learned.setdefault(v, (typ, prefix))
+
+        def add_host(s, v, prio, prop=True):
+            """Bağlamdan gelen sunucu adı: FQDN → alan adı, değilse HOST (yayılır)."""
+            if "." in v and _valid_domain(v):
+                add(s, s + len(v), v, "domain", prio=prio)
+            elif "." in v and _benign_domain(v):
+                return
+            elif _host_label_ok(v):
+                add(s, s + len(v), v, "hostname", prio=prio, prop=prop)
+
+        def add_user(s, v, prio=None):
+            if _user_ok(v): add(s, s + len(v), v, "user", prio=prio, prop=True)
+
+        def add_container(s, name, prio=None):
+            if not name or is_token(name) or name in DOCKER_WORDS or re.fullmatch(r"[0-9a-f]{12,64}", name):
+                return
+            m = COMPOSE_NAME_RE.match(name)
+            if m and len(m.group("p")) >= 2:                          # ithub-web-1 → PROJE_1-web-1
+                add(s, s + len(m.group("p")), m.group("p"), "project", prio=prio, prop=True)
+            else:
+                add(s, s + len(name), name, "container", prio=prio, prop=True)
+
+        # --- 1) parolalar / anahtarlar ---
+        if on("secret"):
             secrets = {}
+            def add_secret(s, v, p):
+                add(s, s + len(v), v, "secret", p); secrets[v] = p
             for m in SECRET_KV_RE.finditer(text):
-                p = _secret_prefix(m.group("core") if m.group("key").lower() != "pass" else "pass")
+                key = m.group("key"); kl = key.lower()
+                if kl.endswith(SECRET_KEY_META) or kl.endswith(SECRET_KEY_NOT): continue
+                p = _secret_prefix(m.group("core"), m.group("suf") or ("pass" if kl == "pass" else None))
                 g = "v1" if m.group("v1") is not None else "v2"
                 v = m.group(g)
                 if g == "v2": v = v.rstrip(".:")
-                if _secret_ok(v, p):
-                    add(m.start(g), m.start(g) + len(v), v, "secret", p); secrets[v] = p
+                if key in ("PWD", "OLDPWD") and v.startswith("/"): continue      # çalışma dizini
+                if _secret_ok(v, p): add_secret(m.start(g), v, p)
             for m in SECRET_CLI_RE.finditer(text):
                 p = _secret_prefix(m.group("core")); v = m.group("v")
-                if _secret_ok(v, p): add(m.start("v"), m.end("v"), v, "secret", p); secrets[v] = p
-            for m in SECRET_URL_RE.finditer(text):
-                if _secret_ok(m.group("pw"), "PAROLA"):
-                    add(m.start("pw"), m.end("pw"), m.group("pw"), "secret", "PAROLA"); secrets[m.group("pw")] = "PAROLA"
-                    if opts.get("config") and not is_token(m.group("user")):
-                        add(m.start("user"), m.end("user"), m.group("user"), "config", "KULLANICI")
+                if _secret_ok(v, p): add_secret(m.start("v"), v, p)
+            for m in CURL_USER_RE.finditer(text):
+                add_user(m.start("u"), m.group("u"))
+                if _secret_ok(m.group("p"), "PAROLA"): add_secret(m.start("p"), m.group("p"), "PAROLA")
             for m in SECRET_BEARER_RE.finditer(text):
-                add(m.start("v"), m.end("v"), m.group("v"), "secret", "TOKEN"); secrets[m.group("v")] = "TOKEN"
+                add_secret(m.start("v"), m.group("v"), "TOKEN")
             for m in SECRET_PEM_RE.finditer(text):
-                add(m.start(), m.end(), m.group(0), "secret", "ANAHTAR")
+                add(m.start("body"), m.end("body"), m.group("body"), "secret", "ANAHTAR")
             for rx in SECRET_PATTERNS:
                 for m in rx.finditer(text):
-                    add(m.start(), m.end(), m.group(0), "secret", "TOKEN"); secrets[m.group(0)] = "TOKEN"
+                    add_secret(m.start(), m.group(0), "TOKEN")
+            for m in ENTROPY_RE.finditer(text):                      # yedek: rastgele görünen dizgi
+                if _looks_random(m.group(0)):
+                    add(m.start(), m.end(), m.group(0), "secret", "TOKEN", prio=P_ENTROPY)
             # aynı parola metnin başka bir yerinde etiketsiz geçiyorsa onu da gizle
-            for v, p in secrets.items():
+            for v, p in list(secrets.items()):
                 if len(v) >= 6:
                     for m in _bounded(v).finditer(text): add(m.start(), m.end(), v, "secret", p)
 
-        if opts.get("custom"):
-            for term in sorted([t for t in self.custom_terms if t], key=len, reverse=True):
-                for m in re.finditer(r"(?<![A-Za-z0-9_])" + re.escape(term) + r"(?![A-Za-z0-9_])", text, re.I):
-                    add(m.start(), m.end(), m.group(0), "custom")
+        # --- 2) bağlantı dizgisi: kullanıcı, parola, sunucu, veritabanı ayrı ayrı ---
+        conn_dbs = {}
+        for m in CONN_RE.finditer(text):
+            if m.group("user"): add_user(m.start("user"), m.group("user"), prio=P_CONTEXT)
+            pw = m.group("pw")
+            if pw and _secret_ok(pw, "PAROLA"):
+                add(m.start("pw"), m.end("pw"), pw, "secret", "PAROLA", prio=8)
+            h = m.group("host")
+            if h and not is_token(h) and not PAT["ipv4"].fullmatch(h) and not h.startswith("["):
+                if "." in h and _valid_domain(h):
+                    add(m.start("host"), m.end("host"), h, "domain", prio=P_CONTEXT)
+                elif "." not in h and _looks_like_host(h):
+                    add(m.start("host"), m.end("host"), h, "hostname", prio=P_CONTEXT)
+            db = m.group("db")
+            if db and m.group("scheme").lower() in DB_SCHEMES and not is_token(db):
+                add(m.start("db"), m.end("db"), db, "config", "DB", prio=P_CONTEXT)
+                conn_dbs[db] = "DB"                      # metnin başka yerlerinde de (psql … appdb)
 
-        # Tarihler her zaman taranır: maskelenmeseler bile IP / hostname sanılmalarını engeller.
+        # --- 3) shell prompt: kullanıcı@sunucu:dizin$ ---
+        def prompt_dir(d, base):
+            d = d.rstrip("/\\")
+            if any(d == sp or d.startswith(sp + "/") for sp in SYSTEM_PATHS): return
+            name = re.split(r"[/\\]", d)[-1] if d else ""
+            low = name.lower()
+            if name and name not in STD_DIRS and len(name) >= 3 and not name.startswith("~") \
+               and not is_token(name) and low not in COMMON_WORDS and low not in HOST_PRODUCT \
+               and _user_ok(name) and not (home_user and name == home_user):
+                add(base + len(d) - len(name), base + len(d), name, "project", prio=P_CONTEXT, prop=True)
+        home_user = None
+        for rx in (PROMPT_RE1, PROMPT_RE2):
+            for m in rx.finditer(text):
+                if not is_token(m.group("u")): add_user(m.start("u"), m.group("u"), prio=P_CONTEXT)
+                if not is_token(m.group("h")): add_host(m.start("h"), m.group("h"), P_CONTEXT)
+                prompt_dir(m.group("d"), m.start("d"))
+        for m in PROMPT_PS.finditer(text):
+            prompt_dir(m.group("d"), m.start("d"))
+        for m in DIR_CTX_RE.finditer(text):
+            hm = HOME_RE.search(m.group("d")); home_user = hm.group("u") if hm else None
+            prompt_dir(m.group("d"), m.start("d"))
+        home_user = None
+        for m in DEPLOY_RE.finditer(text):
+            if not is_token(m.group("p")):
+                add(m.start("p"), m.end("p"), m.group("p"), "project", prop=True)
+        for m in UPSTREAM_RE.finditer(text):
+            n = m.group("n")
+            if not is_token(n) and n.lower() not in COMMON_WORDS:
+                cm = re.match(r"([A-Za-z][A-Za-z0-9]*?)[_\-](?:backend|upstream|app|api|web|servers?|pool)$", n)
+                if cm and _label_spreads(cm.group(1)):
+                    add(m.start("n"), m.start("n") + len(cm.group(1)), cm.group(1), "project", prop=True)
+
+        # --- 4) kullanıcı adları ---
+        for m in HOME_RE.finditer(text):
+            add_user(m.start("u"), m.group("u"))
+        for m in USER_KV_RE.finditer(text):
+            g = "v1" if m.group("v1") is not None else "v2"
+            add_user(m.start(g), m.group(g).rstrip(".:"))
+        for m in USER_ID_RE.finditer(text):
+            for u in USER_ID_ONE.finditer(m.group(0)):
+                add_user(m.start() + u.start("u"), u.group("u"))
+        for rx in (USER_CLI_RE, USER_U_RE):
+            for m in rx.finditer(text): add_user(m.start("v"), m.group("v"))
+        for rx in (SSHD_RE, SUDO_RE):
+            for m in rx.finditer(text): add_user(m.start("u"), m.group("u"))
+        for m in SSH_RE.finditer(text):
+            add_user(m.start("u"), m.group("u"), prio=P_CONTEXT)
+            add_host(m.start("h"), m.group("h"), P_CONTEXT)
+
+        # --- 5) sunucu adı bağlamları: journal, /etc/hosts ---
+        for m in SYSLOG_RE.finditer(text):
+            if m.group("h").upper() not in LOG_LEVELS: add_host(m.start("h"), m.group("h"), P_CONTEXT)
+        for m in HOSTS_RE.finditer(text):
+            if not (PAT["ipv4"].fullmatch(m.group("ip")) or PAT["ipv6"].fullmatch(m.group("ip"))): continue
+            off = m.start("names")
+            for n in re.finditer(r"\S+", m.group("names")):
+                add_host(off + n.start(), n.group(0), P_CONTEXT)
+
+        # --- 6) ağ arayüzleri ---
+        def add_iface(s, name):
+            if name and not is_std_iface(name) and not is_token(name):
+                add(s, s + len(name), name, "iface", prop=True)
+        for m in IFACE_LINE_RE.finditer(text): add_iface(m.start("i"), m.group("i"))
+        for m in IFCONFIG_RE.finditer(text):   add_iface(m.start("i"), m.group("i"))
+        for m in IFACE_REF_RE.finditer(text):
+            if re.search(r"[\d\-]", m.group("i")): add_iface(m.start("i"), m.group("i"))
+        for m in BRIDGE_RE.finditer(text):     add_iface(m.start(), m.group(0))
+
+        # --- 7) konteynerler / compose projesi ---
+        for m in COMPOSE_PROJECT_RE.finditer(text):
+            p = m.group("p")
+            if not is_token(p) and len(p) >= 2:
+                add(m.start("p"), m.end("p"), p, "project", prop=True)
+        for rx in (CONTAINER_NAME_RE, DOCKER_CMD_RE):
+            for m in rx.finditer(text): add_container(m.start("n"), m.group("n"))
+        for h in DOCKER_PS_HDR.finditer(text):
+            pos = h.end() + 1
+            for line in text[pos:].split("\n"):
+                if not re.match(r"[0-9a-f]{12}\s", line): break            # satır konteyner ID ile başlamalı
+                last = re.search(r"(\S+)\s*$", line)
+                if last:
+                    off = pos + last.start(1)
+                    for nm in re.finditer(r"[^,\s]+", last.group(1)):
+                        add_container(off + nm.start(), nm.group(0))
+                pos += len(line) + 1
+
+        # --- 8) özel terimler ---
+        for term in sorted([t for t in self.custom_terms if t], key=len, reverse=True):
+            for m in re.finditer(r"(?<![A-Za-z0-9_])" + re.escape(term) + r"(?![A-Za-z0-9_])", text, re.I):
+                add(m.start(), m.end(), m.group(0), "custom")
+
+        # --- 9) tarihler: maskelenmeseler bile IP / hostname sanılmalarını engeller ---
         for m in DATE_RE.finditer(text):
-            add(m.start(), m.end(), m.group(0), "date")
+            found.append((m.start(), m.end(), m.group(0), "date", None, PRIO["date"], False))
 
-        for typ in ("email","domain","ipv6","ipv4","mac"):
-            if opts.get(typ):
-                for m in PAT[typ].finditer(text):
-                    v = m.group(0)
-                    if not v: continue
-                    if typ == "domain" and not _valid_domain(v): continue
-                    if typ == "ipv4" and _benign_ip(v): continue
-                    add(m.start(), m.end(), v, typ)
-        if opts.get("hostname"):
+        # --- 10) genel kalıplar ---
+        for typ in ("email", "domain", "ipv6", "ipv4", "mac"):
+            if not on(typ): continue
+            for m in PAT[typ].finditer(text):
+                v = m.group(0)
+                if not v: continue
+                if typ == "domain" and not _valid_domain(v): continue
+                if typ == "email" and _benign_domain(v.split("@", 1)[1]): continue   # git@github.com
+                if typ in ("ipv4", "ipv6") and _benign_ip(v): continue
+                if typ in ("ipv4", "ipv6"):
+                    pm = re.match(r"/\d{1,3}", text[m.end():m.end() + 4])
+                    if pm and (v + pm.group(0)) in WELL_KNOWN_NETS: continue
+                if typ == "mac" and _benign_mac(v): continue
+                add(m.start(), m.end(), v, typ)
+        protected = [(m.start(), m.end()) for m in TOKEN_RE.finditer(text)]
+        if on("hostname"):
             seen = set()
-            def push(s, e, v):
-                if (s, e) not in seen:
-                    seen.add((s, e)); add(s, e, v, "hostname")
             for m in KW_RE.finditer(text):
                 name = m.group(1); s = m.start() + m.group(0).rfind(name)
-                push(s, s + len(name), name)
+                if (s, s + len(name)) not in seen and _host_label_ok(name):
+                    seen.add((s, s + len(name)))
+                    add(s, s + len(name), name, "hostname", prop=not re.search(r"\d", name))
+            ends = {pe for _, pe in protected}
             for m in TOK_RE.finditer(text):
-                if re.match(r"\.\d", text[m.end():m.end() + 2]): continue     # sürüm: xxx-7.4.12
-                if _looks_like_host(m.group(0)): push(m.start(), m.end(), m.group(0))
-        if opts.get("config"):
-            values = {}
+                t = m.group(0)
+                if (m.start(), m.end()) in seen: continue
+                if re.match(r"\.\d", text[m.end():m.end() + 2]): continue        # sürüm: xxx-7.4.12
+                if re.match(r"\"\s*:", text[m.end():m.end() + 3]): continue      # JSON anahtarı
+                if re.fullmatch(r"[0-9a-fA-F]{1,4}", t) and text[m.end():m.end() + 1] == ":": continue  # ff02::1
+                if m.start() - 1 in ends and text[m.start() - 1] in "-_": continue  # PROJE_1-web-1
+                if _looks_like_host(t): add(m.start(), m.end(), t, "hostname")
+        if on("config"):
+            values = dict(conn_dbs)
             for rx in (CFG_FREE_RE, CFG_STRICT_RE):
                 for m in rx.finditer(text):
                     val = re.sub(r"[:.]+$", "", m.group(2) or "")
                     if len(val) >= 2 and val.lower() not in CFG_STOP and not is_token(val):
                         values.setdefault(val, _cfg_prefix(m.group(1)))
+            for m in CFG_ENV_RE.finditer(text):
+                val = re.sub(r"[:.]+$", "", m.group("v"))
+                if len(val) >= 2 and val.lower() not in CFG_STOP and not is_token(val):
+                    values.setdefault(val, _cfg_prefix(m.group("key")))
             for v, p in values.items():
                 for m in _bounded(v).finditer(text):
                     add(m.start(), m.end(), v, "config", p)
 
-        # mevcut etiketlerin (IP_1, HOST_2…) üstüne düşen hiçbir şey maskelenmez
-        protected = [(m.start(), m.end()) for m in TOKEN_RE.finditer(text)]
+        # --- 11) öğrenilmiş adları metnin her yerinde yay (bu mesaj + defterdeki önceki mesajlar) ---
+        spread = dict(learned)
+        for f in found:
+            if f[3] == "domain":
+                for lbl in _split_domain(f[2])[0]:
+                    if _label_spreads(lbl): spread.setdefault(lbl, ("hostname", None))
+        for e in self.entries:
+            if e.get("prop") and not e.get("secret"):
+                spread.setdefault(e["real"], (e["type"], None))
+        for v, (typ, p) in spread.items():
+            if len(v) < 4 or v.lower() in COMMON_WORDS or v.lower() in SYSTEM_USERS: continue
+            if not on(typ) or v not in text: continue
+            for m in _spread_re(v).finditer(text):
+                add(m.start(), m.end(), v, typ, p, prio=P_SPREAD)
+
+        # mevcut etiketlerin (IP_PRIV_1, HOST_2…) üstüne düşen hiçbir şey maskelenmez
         found = [f for f in found if not any(f[0] < pe and ps < f[1] for ps, pe in protected)]
 
-        found.sort(key=lambda x: (x[0], -PRIO[x[3]], -(x[1]-x[0])))
+        found.sort(key=lambda x: (x[0], -x[5], -(x[1] - x[0])))
         chosen = []; last_end = -1
         for f in found:
             if f[0] >= last_end:
                 chosen.append(f); last_end = f[1]
         if not opts.get("date"):
             chosen = [c for c in chosen if c[3] != "date"]    # tanındı, korundu, ama maskelenmez
-        return chosen
+        return [(s, e, v, t, p, pr) for s, e, v, t, p, _, pr in chosen]
 
     # ---- genel API ----
     def anonymize(self, text, opts=None):
         with self.lock:
             matches = self._collect(text, opts)
             out = []; i = 0
-            for s, e, v, t, p in matches:
-                out.append(text[i:s]); out.append(self._get_fake(v, t, p)); i = e
+            for s, e, v, t, p, pr in matches:
+                out.append(text[i:s]); out.append(self._get_fake(v, t, p, pr)); i = e
             out.append(text[i:])
             if matches: self.save()
             return "".join(out), len(matches)
@@ -429,6 +835,7 @@ class Mapper:
         return (r"(?<![A-Za-z0-9._\-\/])", r"(?![A-Za-z0-9._\-\/])")
 
     def restore(self, text):
+        """Ters eşleme: metindeki bilinen etiketleri gerçek değerlere çevirir."""
         with self.lock:
             count = [0]
             def sub(m):
@@ -451,11 +858,13 @@ class Mapper:
                 real, fake = e.get("real"), e.get("fake")
                 if not real or not fake or e.get("secret") or real in self.real_to_fake or fake in self.tok:
                     continue
+                ne = {"real": real, "fake": fake, "type": e.get("type", "custom")}
+                if e.get("prop"): ne["prop"] = True
                 self.real_to_fake[real] = fake; self.tok[fake] = real
-                self.entries.append({"real": real, "fake": fake, "type": e.get("type", "custom")})
-                m = re.match(r"([A-Z0-9]+)_(\d+)$", fake)
-                if m and is_token(fake):
-                    self.counters[m.group(1)] = max(self.counters.get(m.group(1), 0), int(m.group(2)))
+                self.entries.append(ne); self.by_real[real] = ne
+                if is_token(fake):
+                    p, n = fake.rsplit("_", 1)
+                    self.counters[p] = max(self.counters.get(p, 0), int(n))
                 added += 1
             self.save()
         return added
@@ -468,23 +877,27 @@ class Mapper:
             self.custom_terms = terms; self.save()
 
     def save(self):
+        if not self.store: return
         try:
-            with open(STORE, "w", encoding="utf-8") as f:
-                json.dump({"version": 2, "entries": self.export_entries(), "counters": self.counters,
+            with open(self.store, "w", encoding="utf-8") as f:
+                json.dump({"version": 3, "entries": self.export_entries(), "counters": self.counters,
                            "custom_terms": self.custom_terms}, f, ensure_ascii=False, indent=1)
         except Exception as ex:
             print("Kaydetme hatası:", ex)
 
     def load(self):
-        if not os.path.exists(STORE): return
+        if not self.store or not os.path.exists(self.store): return
         try:
-            with open(STORE, encoding="utf-8") as f: d = json.load(f)
+            with open(self.store, encoding="utf-8") as f: d = json.load(f)
             self.custom_terms = d.get("custom_terms", [])
             self.counters = {k: int(v) for k, v in d.get("counters", {}).items()}
             for e in d.get("entries", []):
                 if e.get("secret") or not e.get("real") or not e.get("fake"): continue
-                self.entries.append({"real": e["real"], "fake": e["fake"], "type": e.get("type", "custom")})
-                self.real_to_fake.setdefault(e["real"], e["fake"])
+                ne = {"real": e["real"], "fake": e["fake"], "type": e.get("type", "custom")}
+                if e.get("prop"): ne["prop"] = True
+                self.entries.append(ne)
+                if e["real"] not in self.real_to_fake:
+                    self.real_to_fake[e["real"]] = e["fake"]; self.by_real[e["real"]] = ne
                 if is_token(e["fake"]):
                     self.tok[e["fake"]] = e["real"]
                     p, n = e["fake"].rsplit("_", 1)
@@ -1033,10 +1446,11 @@ def run_gui(agent):
     pa = pages["Anonimleştir"]
     pa.grid_columnconfigure(0, weight=1)
     pa.grid_rowconfigure(1, weight=1, uniform="io"); pa.grid_rowconfigure(3, weight=1, uniform="io")
-    chiprow = clear(pa); chiprow.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-    chips = clear(chiprow); chips.pack(side="left")
+    chiprow = clear(pa); chiprow.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    CHIP_GROUPS = [("Ağ", ("ipv4", "ipv6", "domain", "hostname", "mac", "iface")),
+                   ("Kimlik ve gizli", ("user", "email", "container", "config", "secret", "date", "custom"))]
     optvars = {}
-    def make_chip(t):
+    def make_chip(chips, t):
         v = tk.BooleanVar(value=t not in DEFAULT_OFF); optvars[t] = v
         b = ctk.CTkButton(chips, text=LABELS[t], width=10, height=30, corner_radius=15, font=F(11, "bold"),
                           border_width=1)
@@ -1046,16 +1460,13 @@ def run_gui(agent):
                         border_color=(TEAL_LINE if on else BORDER), text_color=(TEAL if on else FAINT))
         b.configure(command=lambda: (v.set(not v.get()), paint()))
         paint(); return b
-    for t in ALL_TYPES:
-        make_chip(t).pack(side="left", padx=(0, 6))
+    for gi, (gname, types_) in enumerate(CHIP_GROUPS):
+        row = clear(chiprow); row.pack(fill="x", pady=(0 if gi == 0 else 6, 0))
+        ctk.CTkLabel(row, text=gname, font=F(11), text_color=FAINT, width=104, anchor="w").pack(side="left")
+        for t in types_:
+            make_chip(row, t).pack(side="left", padx=(0, 6))
     def get_opts(): return {t: optvars[t].get() for t in ALL_TYPES}
     agent.get_opts = get_opts
-    custom_entry = ctk.CTkEntry(chiprow, height=32, corner_radius=9, border_width=1, border_color=BORDER,
-                                fg_color=INK, text_color=TEXT, font=F(12), width=120,
-                                placeholder_text="Özel terimler, virgülle…", placeholder_text_color=FAINT)
-    custom_entry.pack(side="left", fill="x", expand=True, padx=(8, 0))
-    if agent.mapper.custom_terms:
-        custom_entry.insert(0, ", ".join(agent.mapper.custom_terms))
 
     in_card, in_head, src = io_card(pa, "Giriş", "log, config, hata çıktısı")
     in_card.grid(row=1, column=0, sticky="nsew")
@@ -1084,6 +1495,13 @@ def run_gui(agent):
     btn(act1, "Anonimleştir", do_anon, "primary", width=170, height=42).pack(side="left")
     ctk.CTkLabel(act1, text="Ctrl+Enter", font=F(11), text_color=FAINT).pack(side="left", padx=12)
     btn(act1, "Temizle", clear_in, "ghost", width=90, height=34).pack(side="right")
+    custom_entry = ctk.CTkEntry(act1, height=34, corner_radius=9, border_width=1, border_color=BORDER,
+                                fg_color=INK, text_color=TEXT, font=F(12), width=150,
+                                placeholder_text="Özel terimler (firma adı, proje kodu…), virgülle",
+                                placeholder_text_color=FAINT)
+    custom_entry.pack(side="left", fill="x", expand=True, padx=(8, 12))
+    if agent.mapper.custom_terms:
+        custom_entry.insert(0, ", ".join(agent.mapper.custom_terms))
 
     out_card, out_head, masked_out = io_card(pa, "AI'a gidecek metin", "maskeli")
     out_card.grid(row=3, column=0, sticky="nsew")

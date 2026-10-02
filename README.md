@@ -1,7 +1,8 @@
 # Anonim Ajan
 
 Log ve config çıktılarını ChatGPT, Claude gibi AI araçlarına göndermeden önce
-**IP, DNS, hostname, e-posta, MAC, config değerlerini ve parolaları** türünü
+**IP, DNS, hostname, kullanıcı, konteyner, ağ arayüzü, config değerlerini ve
+parolaları** türünü
 söyleyen etiketlerle maskeleyen, AI'ın cevabını da **gerçek değerlere geri
 çeviren** masaüstü aracı.
 
@@ -10,8 +11,13 @@ Her şey bilgisayarında çalışır. Hiçbir ağ bağlantısı yoktur, veri dı
 ![Anonim Ajan](ekran.png)
 
 ```
-Gerçek :  datasource jboss → app01.sirket.com.tr (10.10.10.20), password=Gizli42
-Maskeli:  datasource DS_1 → HOST_1.DOMAIN_1 (IP_1), password=PAROLA_1
+Gerçek :  kemal@web01:~/projects/ithub$ docker logs ithub-web-1
+          DATABASE_URL=postgresql://appuser:Gizli42@db01.sirket.com.tr:5432/appdb
+          inet 10.10.10.20/24 brd 10.10.10.255 scope global ens192
+
+Maskeli:  USER_1@HOST_1:~/projects/PROJE_1$ docker logs PROJE_1-web-1
+          DATABASE_URL=postgresql://USER_2:PAROLA_1@HOST_2.DOMAIN_1:5432/DB_1
+          inet IP_PRIV_1/24 brd IP_PRIV_2 scope global ens192
 ```
 
 Aynı gerçek değer her yerde aynı etikete gider; aynı alan adının sunucuları
@@ -23,12 +29,15 @@ etiketler gerçek değerlere döner.
 
 | Etiket | Ne gizlenir | Örnek |
 |---|---|---|
-| `IP_n`, `IPV6_n` | IP adresleri | `10.10.10.20` → `IP_1` |
+| `IP_PRIV_n`, `IP_PUB_n` | Özel (RFC1918, CGNAT, link-local) ve genel IPv4; `/prefix` korunur | `10.10.10.0/24` → `IP_PRIV_1/24` |
+| `IPV6_PRIV_n`, `IPV6_PUB_n` | IPv6 adresleri (ULA ve link-local özel sayılır) | `fe80::250:56ff:fea1:b2c3/64` → `IPV6_PRIV_1/64` |
 | `HOST_n`, `DOMAIN_n` | Sunucu adları ve alan adları | `app01.sirket.com.tr` → `HOST_1.DOMAIN_1` |
+| `USER_n` | Kullanıcı adları | `kemal@web01:~$` → `USER_1@HOST_1:~$` |
+| `PROJE_n`, `CONTAINER_n` | Proje ve konteyner adları | `ithub-web-1` → `PROJE_1-web-1`, `nostalgic_hopper` → `CONTAINER_1` |
+| `IFACE_n` | Standart olmayan ağ arayüzleri | `br-3f2a1b4c5d6e` → `IFACE_1` |
 | `MAIL_n` | E-posta adresleri | `admin@sirket.com.tr` → `MAIL_1` |
 | `MAC_n` | MAC adresleri | `00:1B:44:11:3A:B7` → `MAC_1` |
-| `DS_n`, `JNDI_n`, `DB_n`, `SCHEMA_n` | Datasource, JNDI, veritabanı, şema adları | `datasource jboss` → `datasource DS_1` |
-| `KULLANICI_n`, `AYAR_n` | Kullanıcı adları ve diğer config değerleri | `<user-name>appuser</user-name>` → `KULLANICI_1` |
+| `DS_n`, `JNDI_n`, `DB_n`, `SCHEMA_n`, `AYAR_n` | Datasource, JNDI, veritabanı, şema ve diğer config değerleri | `datasource jboss` → `datasource DS_1` |
 | `PAROLA_n`, `TOKEN_n`, `ANAHTAR_n` | Parolalar, token'lar, özel anahtarlar | `şifre: Ankara06` → `şifre: PAROLA_1` |
 | `TARIH_n` | Tarihler (isteğe bağlı) | `01.10.2026` → `TARIH_1` |
 | `OZEL_n` | Özel terimler alanına yazdıkların | `ACME A.Ş.` → `OZEL_1` |
@@ -48,6 +57,7 @@ ve kabukta bozulmadan kalır.
 | `build_windows.bat` | Windows için tek dosya `.exe` üretir |
 | `build_linux.sh` | Linux için tek dosya çalıştırılabilir üretir |
 | `ekran.png` | README'deki ekran görüntüsü |
+| `tests/` | Regresyon testleri: örnek çıktılar ve beklenen maskeli halleri |
 
 ## Hızlı başlangıç
 
@@ -101,8 +111,10 @@ Sağ üstteki **Yön** seçicisiyle davranışı değiştirebilirsin:
 - **Defter:** gerçek ↔ etiket tablosu, en yeni kayıt üstte. Arama, dışa/içe
   aktarma ve sıfırlama buradan. Parolalar burada `••••••••` olarak görünür.
 
-Kategoriler (IPv4, IPv6, DNS, E-posta, MAC, Host, Config, Parola, Tarih, Özel)
-tek tıkla açılıp kapanır. Tarih dışındakiler varsayılan olarak açıktır. Fazla maskeleyen bir kategori olursa kapatabilirsin.
+Kategoriler iki satırda, tek tıkla açılıp kapanır: **Ağ** (IPv4, IPv6, DNS,
+Host, MAC, Iface) ve **Kimlik ve gizli** (User, E-posta, Docker, Config,
+Parola, Tarih, Özel). Tarih dışındakiler varsayılan olarak açıktır. Fazla
+maskeleyen bir kategori olursa kapatabilirsin.
 **Özel terimler** alanına firma adı gibi otomatik yakalanmayan kelimeleri
 virgülle ekleyebilirsin.
 
@@ -125,17 +137,50 @@ Linux'ta görev çubuğuna küçülür; izleme sürer.
 **Maskelenir:** IPv4/IPv6 (`ada_192.168.22.22` gibi metne gömülü olanlar dahil),
 alan adları (`.com.tr` gibi iki seviyeli uzantılar doğru ayrılır), e-posta,
 MAC, `server01` / `db-prod-01` gibi sunucu adları, `datasource jboss` /
-`jndi-name="java:/AppDS"` / `<user-name>…` gibi config değerleri.
+`jndi-name="java:/AppDS"` / `DB_NAME=appdb` gibi config değerleri.
+
+**Bağlamdan tanınanlar.** Aşağıdaki yapılar bir değerin ne olduğunu kesin
+söylediği için önce bunlara bakılır; rakam içermeyen adlar da yakalanır:
+
+| Bağlam | Ne çıkarılır |
+|---|---|
+| Shell prompt: `user@host:~/dizin$`, `[user@host dizin]$`, `PS C:\Users\…>` | kullanıcı → `USER`, sunucu → `HOST`, proje dizini → `PROJE` |
+| `ip a`, `ifconfig`, `ip route`, `dev …`, `master …` | standart olmayan arayüz → `IFACE` |
+| `docker ps` tablosu, `--name`, `container_name:`, `docker logs/exec/restart …`, `docker inspect` | konteyner → `PROJE_n-servis-n` ya da `CONTAINER` |
+| `com.docker.compose.project`, `COMPOSE_PROJECT_NAME`, `docker compose -p`, `PWD=`, JBoss `Deployed "x.war"`, nginx `upstream x_backend` | proje → `PROJE` |
+| `/etc/hosts` satırları, `HOSTNAME=`, journal/syslog sunucu sütunu, `ssh user@host` | sunucu → `HOST` / `DOMAIN` |
+| `*_USER`, `*_USERNAME`, `user=`, `--user`, `-u ad` (mysql, psql, sudo, docker exec…), `/home/ad`, `uid=1001(ad)`, sshd ve sudo logları | kullanıcı → `USER` |
+| `scheme://kullanıcı:parola@sunucu:port/veritabanı` | her parça ayrı: `USER`, `PAROLA`, `HOST`/`DOMAIN`, `DB` |
+
+Bir kez öğrenilen kullanıcı, proje ve konteyner adları **sonraki mesajlarda
+da** aynı etiketi alır; bağlamsız düz bir cümlede geçseler bile. Proje adı
+alan adında (`ithub.sirket.com.tr` → `PROJE_1.DOMAIN_1`), imaj yolunda,
+compose ağ adında (`PROJE_1_default`) ve nginx log dosyasında da aynı etiketle
+görünür.
+
+**Konteyner kuralı:** bütün konteyner adları maskelenir. Compose adlarında
+(`proje-servis-n`) yalnızca kullanıcıya özel proje kısmı gizlenir, servis adı
+ve sıra numarası AI için korunur: `ithub-web-1` → `PROJE_1-web-1`.
+
+**Sistem hesapları** (`root`, `admin`, `postgres`, `www-data`, `oracle`,
+`deploy`…) maskelenmez; hassas değiller ve AI için anlamlılar. Bunları da
+gizlemek istersen `anonim_agent.py` içinde `MASK_SYSTEM_USERS = True` yap.
 
 **Parolalar ve anahtarlar:** anahtar adında `password`, `passwd`, `pwd`,
 `şifre`, `sifre`, `parola`, `secret`, `token`, `api_key` geçen her değer
 (`password=…`, `şifre: …`, `"password": "…"`, `<password>…</password>`,
 `spring.datasource.password=…`, `DB_PASSWORD=…`, `--password …`), bağlantı
 adresindeki parola (`jdbc:mysql://root:Parola@host`), `Authorization: Bearer …`,
-JWT, AWS ve GitHub anahtarları, `-----BEGIN PRIVATE KEY-----` blokları. Aynı
-parola metnin başka bir yerinde etiketsiz geçerse orada da gizlenir.
-`${DB_PASS}` gibi değişken atıflarına, `password: null` gibi boş değerlere
-dokunulmaz.
+`*_SECRET`, `*_KEY`, `*_TOKEN`, `*_PASS` biçimli ortam değişkenleri, `curl -u
+kullanıcı:parola`, JWT, AWS (`AKIA…`), GitHub (`ghp_`, `gho_`, `github_pat_`),
+GitLab, Slack, Stripe, Google, Vault anahtarları ve `-----BEGIN … PRIVATE KEY-----`
+blokları (başlık satırları görünür kalır, yalnızca gövde gizlenir). Yedek
+olarak 20+ karakterlik, büyük/küçük harf ve rakam karışık, rastgele görünen
+dizgiler de `TOKEN` olur. Aynı parola metnin başka bir yerinde etiketsiz
+geçerse orada da gizlenir.
+`${DB_PASS}` gibi değişken atıflarına, `password: null` gibi boş değerlere,
+`PASSWORD_MIN_LENGTH`, `TOKEN_URL`, `DB_PASSWORD_FILE` gibi üst bilgi
+anahtarlarına ve çalışma dizini olan `PWD=`'ye dokunulmaz.
 
 **Tarihler:** `2026-10-01`, `01.10.2026`, `30/09/2026`, `01/Oct/2026`,
 `Oct 1, 2026`, `1 Ekim 2026` her zaman tanınır, böylece asla IP ya da sunucu
@@ -147,8 +192,37 @@ adı sanılmaz. Varsayılan olarak maskelenmez, çünkü hata ayıklarken zaman
 - Dosya adları: `server.log`, `standalone.xml`
 - Hata kodları: `WFLYCTL0013`, `ORA-00942`, `HHH000412`
 - Log gürültüsü: `thread-12`, `pool-3`, `worker-7`, saatler
-- Sürümler: `java17`, `rhel8`, `jboss-eap-7.4.12`, `postgresql-14`, `TLSv1.2`
-- Kamusal adresler: `127.0.0.1`, `github.com`, `redhat.com`, `docs.oracle.com`
+- Sürümler ve mimariler: `java17`, `rhel8`, `jboss-eap-7.4.12`, `java-17-openjdk-amd64`, `TLSv1.2`, `x86_64`
+- Komut anahtar kelimeleri: `inet`, `inet6`, `link/ether`, `qdisc`, `brd`, `scope`, `ssh2`, `overlay2`
+- Standart arayüzler: `lo`, `eth*`, `ens*`, `enp*`, `eno*`, `docker0`, `veth*`, `virbr*`, `wg*`, `bond*`
+- Özel adresler: `127.0.0.0/8`, `0.0.0.0`, `::1`, `::`, çok yayın, `255.255.255.0` gibi maskeler,
+  `10.0.0.0/8` gibi genel ağ blokları, `00:00:00:00:00:00`, `ff:ff:ff:ff:ff:ff`,
+  `/etc/hosts`'taki `localhost`, `ip6-localhost`, `ip6-allnodes`…
+- Kamusal alan adları ve registry'ler: `docker.io`, `ghcr.io`, `quay.io`, `gcr.io`,
+  `registry.k8s.io`, `github.com`, `redhat.com`, `docs.oracle.com`
+- Konteyner ID'leri, `sha256` özetleri ve git commit'leri (onaltılık kimlikler)
+
+## Testler
+
+`tests/fixtures/` klasöründe gerçekçi örnekler var: `ip a`, `docker ps`,
+`.env`, `/etc/hosts`, `env`, `docker inspect`, nginx config, `journalctl`,
+prompt ve bağlantı dizgileri, JBoss logu. `tests/expected/` klasöründe her
+birinin beklenen maskeli hali duruyor.
+
+```bash
+python tests/test_masking.py            # çalıştır
+python tests/test_masking.py --update   # beklenen çıktıları yeniden üret
+```
+
+Her örnek için şunlara bakılır: çıktı beklenenle birebir aynı mı, gerçek
+değerlerin hiçbiri sızıyor mu, korunması gerekenler (`ens192`, `::1`,
+`ghcr.io`…) yerinde mi, geri çevirince orijinal metin dönüyor mu, maskeli
+metni tekrar maskelemek bir şey değiştiriyor mu. Ayrıca aynı adın farklı
+mesajlarda aynı etiketi aldığı ve AI cevabının doğru geri çevrildiği test
+edilir. Arayüz paketleri gerekmez; `pytest tests/` ile de çalışır.
+
+Motoru değiştirdikten sonra testleri çalıştır. Bir fark çıkarsa önce farkı
+incele; `--update`'i ancak yeni çıktının doğru olduğundan eminsen kullan.
 
 ## Paketleme
 
