@@ -57,7 +57,7 @@ ve kabukta bozulmadan kalır.
 | `build_windows.bat` | Windows için tek dosya `.exe` üretir |
 | `build_linux.sh` | Linux için tek dosya çalıştırılabilir üretir |
 | `ekran.png` | README'deki ekran görüntüsü |
-| `tests/` | Regresyon testleri: örnek çıktılar ve beklenen maskeli halleri |
+| `tests/` | Regresyon testleri: örnek çıktılar, beklenen maskeli halleri, web sürümü için parite testi |
 
 ## Hızlı başlangıç
 
@@ -160,7 +160,22 @@ görünür.
 
 **Konteyner kuralı:** bütün konteyner adları maskelenir. Compose adlarında
 (`proje-servis-n`) yalnızca kullanıcıya özel proje kısmı gizlenir, servis adı
-ve sıra numarası AI için korunur: `ithub-web-1` → `PROJE_1-web-1`.
+ve sıra numarası AI için korunur: `ithub-web-1` → `PROJE_1-web-1`. Tek istisna,
+adı kamusal imajıyla birebir aynı olan konteyner: `ghcr.io/open-webui/open-webui`
+imajından çalışan `open-webui` açıkta kalır, çünkü imaj sütunu bu adı zaten
+gösteriyor ve kullanıcıya özel bir bilgi taşımıyor.
+
+**İmajlar:** `docker ps` ve `docker images` çıktısındaki yerel imajlar
+(`it-system-management-hub`, `dockotp-totp-panel` gibi, registry'siz ve Docker
+Hub resmi imajı olmayanlar) proje adı sayılır ve `PROJE_n` olur. Compose ile
+oluşturulmuş `proje-servis` imajlarında yalnızca proje kısmı gizlenir:
+`vm-inventory-app` → `PROJE_2-app`. `postgres:16-alpine`, `redis:7` gibi resmi
+imajlara ve `ghcr.io`, `quay.io` gibi kamusal registry'lerdeki imajlara dokunulmaz.
+
+**Eski defter:** önceki sürümlerden kalan etiketler (`IP_5`, `HOST_10`,
+`KULLANICI_1`) bağlam daha kesin bir tür bulduğunda kendiliğinden yeni
+biçime geçer (`IP_PRIV_3`, `IFACE_1`, `USER_1`). Eski etiketler defterde
+kalır, eski AI cevapları geri çevrilmeye devam eder.
 
 **Sistem hesapları** (`root`, `admin`, `postgres`, `www-data`, `oracle`,
 `deploy`…) maskelenmez; hassas değiller ve AI için anlamlılar. Bunları da
@@ -205,7 +220,7 @@ adı sanılmaz. Varsayılan olarak maskelenmez, çünkü hata ayıklarken zaman
 ## Testler
 
 `tests/fixtures/` klasöründe gerçekçi örnekler var: `ip a`, `docker ps`,
-`.env`, `/etc/hosts`, `env`, `docker inspect`, nginx config, `journalctl`,
+`docker images`, `.env`, `/etc/hosts`, `env`, `docker inspect`, nginx config, `journalctl`,
 prompt ve bağlantı dizgileri, JBoss logu. `tests/expected/` klasöründe her
 birinin beklenen maskeli hali duruyor.
 
@@ -214,12 +229,26 @@ python tests/test_masking.py            # çalıştır
 python tests/test_masking.py --update   # beklenen çıktıları yeniden üret
 ```
 
-Her örnek için şunlara bakılır: çıktı beklenenle birebir aynı mı, gerçek
+Her örnek için şunlara bakılır: çıktı beklenenle birebir aynı mı, Windows
+satır sonlarıyla (`\r\n`) da aynı sonucu veriyor mu, gerçek
 değerlerin hiçbiri sızıyor mu, korunması gerekenler (`ens192`, `::1`,
 `ghcr.io`…) yerinde mi, geri çevirince orijinal metin dönüyor mu, maskeli
 metni tekrar maskelemek bir şey değiştiriyor mu. Ayrıca aynı adın farklı
 mesajlarda aynı etiketi aldığı ve AI cevabının doğru geri çevrildiği test
 edilir. Arayüz paketleri gerekmez; `pytest tests/` ile de çalışır.
+
+Tarayıcı sürümü de aynı beklenen çıktılarla test edilir:
+`tests/test_web_engine.js`, `anonimlestirici.html` içindeki motoru
+(`ENGINE START` / `ENGINE END` arası) çıkarıp aynı kontrolleri yapar. Node
+kuruluysa `python tests/test_masking.py` bunu da otomatik çalıştırır; tek
+başına çalıştırmak için:
+
+```bash
+node tests/test_web_engine.js
+```
+
+Motorda bir kuralı değiştirirsen ikisini de güncelle: Python'u değiştirip
+HTML'i unutursan web testi kırılır.
 
 Motoru değiştirdikten sonra testleri çalıştır. Bir fark çıkarsa önce farkı
 incele; `--update`'i ancak yeni çıktının doğru olduğundan eminsen kullan.
@@ -290,10 +319,19 @@ Açılışta başlamasın istersen `~/.config/autostart/anonim-ajan.desktop` dos
 ## Tarayıcı sürümü
 
 `anonimlestirici.html` kurulum gerektirmez ve tamamen tarayıcıda çalışır.
-Pano yakalama ve kısayol yoktur: metni yapıştırıp butonlarla çalışırsın.
-Etiket sistemi, parola ve tarih tanıma ile Java paket adı / dosya adı / hata
-kodu filtreleri şimdilik yalnızca masaüstü sürümünde var; tarayıcı sürümü
-hâlâ gerçekçi sahte değerler üretir.
+Masaüstü sürümle **aynı motoru** kullanır: aynı girdiye aynı etiketleri verir
+(`IP_PRIV_1`, `HOST_1`, `PROJE_1-web-1`…), parola ve tarih tanıma, bağlam
+kuralları ve beyaz liste aynıdır. Farkları:
+
+- Pano yakalama ve kısayol yoktur: metni yapıştırıp butonlarla çalışırsın
+  (`Ctrl+Enter` ile anonimleştir / geri çevir).
+- Defter varsayılan olarak yalnızca açık sekmede durur. "Bu tarayıcıda
+  hatırla" işaretlenirse tarayıcının yerel deposuna kaydedilir (parolalar
+  hariç); işaret kaldırılınca kayıt silinir.
+- Sol kutuya etiketli bir AI cevabı yapıştırırsan uyarır ve tek tıkla geri
+  çevir alanına taşır.
+- Masaüstünün defteri (`~/.anonim_ajan.json`) ve dışa aktarılan defterler
+  içe aktarılabilir; iki sürüm arasında geçiş yapabilirsin.
 
 ## Veri ve gizlilik
 

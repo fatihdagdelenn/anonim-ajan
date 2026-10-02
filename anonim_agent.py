@@ -304,7 +304,7 @@ LOG_LEVELS = {"INFO", "WARN", "WARNING", "ERROR", "DEBUG", "TRACE", "FATAL", "NO
 
 # ---- /etc/hosts satırı: "10.10.10.20  db01.sirket.com.tr db01" ----
 HOSTS_RE = re.compile(r"(?m)^[ \t]*(?P<ip>(?:\d{1,3}\.){3}\d{1,3}|[0-9A-Fa-f:]*:[0-9A-Fa-f:]+)[ \t]+"
-                      r"(?P<names>[A-Za-z0-9][\w.\-]*(?:[ \t]+[A-Za-z0-9][\w.\-]*){0,7})[ \t]*(?:#.*)?$")
+                      r"(?P<names>[A-Za-z0-9][\w.\-]*(?:[ \t]+[A-Za-z0-9][\w.\-]*){0,7})[ \t\r]*(?:#[^\n]*)?$")
 HOST_KEEP = {"localhost", "localhost.localdomain", "localdomain", "broadcasthost", "ip6-localhost",
              "ip6-loopback", "ip6-localnet", "ip6-mcastprefix", "ip6-allnodes", "ip6-allrouters",
              "ip6-allhosts", "host.docker.internal", "gateway.docker.internal"}
@@ -325,7 +325,16 @@ IFACE_REF_RE  = re.compile(r"\b(?:dev|master|iif|oif|iface|interface|vlan-raw-de
 BRIDGE_RE     = re.compile(r"\bbr-[0-9a-f]{12}\b")
 
 # ---- konteyner / compose projesi ----
-DOCKER_PS_HDR = re.compile(r"(?m)^CONTAINER ID\s+IMAGE\s+.*\bNAMES[ \t]*$")
+DOCKER_PS_HDR = re.compile(r"(?m)^CONTAINER ID\s+IMAGE\s+.*\bNAMES[ \t\r]*$")
+DOCKER_IMAGES_HDR = re.compile(r"(?m)^REPOSITORY\s+TAG\s+IMAGE ID\b[^\n]*$")
+# Docker Hub resmi imajları — yerel (kullanıcıya özel) imaj sayılmaz
+OFFICIAL_IMAGES = set("""postgres mysql mariadb redis valkey nginx httpd node python alpine ubuntu debian
+    busybox mongo mongo-express rabbitmq elasticsearch kibana logstash grafana prometheus traefik caddy
+    memcached wordpress php golang openjdk eclipse-temurin amazoncorretto ibmjava jenkins sonarqube
+    registry adminer haproxy consul vault influxdb telegraf zookeeper kafka cassandra couchdb neo4j
+    nextcloud gitea ghost drupal joomla tomcat jetty centos fedora rockylinux almalinux oraclelinux
+    amazonlinux docker hello-world swarm solr nats etcd minio keycloak ruby rust perl gcc maven
+    gradle composer bash vaultwarden portainer pgadmin4 phpmyadmin percona clickhouse""".split())
 CONTAINER_NAME_RE = re.compile(r"(?:--name[ =][\"']?|container_name:[ \t]*[\"']?|\"Name\"\s*:\s*\"/)"
                                r"(?P<n>[A-Za-z0-9][\w.\-]*)")
 DOCKER_CMD_RE = re.compile(
@@ -523,7 +532,7 @@ class Mapper:
 
     def _register(self, real, typ, prefix, secret=False, prop=False):
         m = self.secret_map if secret else self.real_to_fake
-        if real in m:
+        if real in m and not (not secret and self._should_upgrade(m[real], prefix)):
             if prop and not secret and real in self.by_real:
                 self.by_real[real]["prop"] = True            # sonradan bağlamla doğrulandı → yay
             return m[real]
@@ -535,6 +544,17 @@ class Mapper:
         self.entries.append(e)
         if not secret: self.by_real[real] = e
         return t
+
+    @staticmethod
+    def _should_upgrade(old, prefix):
+        """Defterdeki etiket eski/genel bir türdeyse ve bağlam daha kesin bir tür bulduysa yeni etiket ver.
+        Eski etiket defterde kalır, eski AI cevapları geri çevrilmeye devam eder.
+        Örn. eski sürümden HOST_10 (br-3f2a…) → IFACE_1, IP_5 → IP_PRIV_3."""
+        if not is_token(old): return True                         # ilk sürümün gerçekçi sahteleri
+        op = old.rsplit("_", 1)[0]
+        if op == prefix: return False
+        if op in ("IP", "IPV6", "KULLANICI"): return True         # sürüm 2 önekleri
+        return op == "HOST" and prefix in ("IFACE", "CONTAINER", "PROJE", "USER")
 
     def _get_fake(self, value, typ, prefix=None, prop=False):
         if typ == "domain":
@@ -709,15 +729,47 @@ class Mapper:
                 add(m.start("p"), m.end("p"), p, "project", prop=True)
         for rx in (CONTAINER_NAME_RE, DOCKER_CMD_RE):
             for m in rx.finditer(text): add_container(m.start("n"), m.group("n"))
+        def image_parts(img):
+            """'ghcr.io/x/app:1.2' → (repo='ghcr.io/x/app', public?, yerel?)"""
+            repo = re.split(r"[:@]", img, 1)[0] if not img.startswith("[") else img
+            first = repo.split("/")[0]
+            has_registry = "/" in repo and ("." in first or ":" in first or first == "localhost")
+            if has_registry:
+                return repo, _benign_domain(first), False
+            if "/" in repo:                                           # Docker Hub kurum/imaj
+                return repo, True, False
+            return repo, repo in OFFICIAL_IMAGES, repo not in OFFICIAL_IMAGES
+        def add_local_image(s, repo, cname=None):
+            """Yerel imaj adı kullanıcıya özeldir: compose imajı 'proje-servis' ise proje kısmı,
+            değilse adın tamamı PROJE olur (dockotp-totp-panel → PROJE_4)."""
+            cm = COMPOSE_NAME_RE.match(cname or "")
+            if cm and repo in (cm.group("p") + "-" + cm.group("s"), cm.group("p") + "_" + cm.group("s")):
+                add(s, s + len(cm.group("p")), cm.group("p"), "project", prop=True)
+            elif not is_token(repo) and len(repo) >= 3:
+                add(s, s + len(repo), repo, "project", prop=True)
         for h in DOCKER_PS_HDR.finditer(text):
             pos = h.end() + 1
             for line in text[pos:].split("\n"):
-                if not re.match(r"[0-9a-f]{12}\s", line): break            # satır konteyner ID ile başlamalı
+                row = re.match(r"([0-9a-f]{12})\s+(?P<img>\S+)", line)
+                if not row: break                                     # satır konteyner ID ile başlamalı
                 last = re.search(r"(\S+)\s*$", line)
-                if last:
-                    off = pos + last.start(1)
-                    for nm in re.finditer(r"[^,\s]+", last.group(1)):
-                        add_container(off + nm.start(), nm.group(0))
+                names = list(re.finditer(r"[^,\s]+", last.group(1))) if last else []
+                img = row.group("img"); repo, public, local = image_parts(img)
+                first_name = names[0].group(0) if names else None
+                if local and not is_token(img):
+                    add_local_image(pos + row.start("img"), repo, first_name)
+                for nm in names:
+                    n = nm.group(0)
+                    if public and n == repo.split("/")[-1]: continue     # open-webui ↔ ghcr.io/open-webui/open-webui
+                    add_container(pos + last.start(1) + nm.start(), n)
+                pos += len(line) + 1
+        for h in DOCKER_IMAGES_HDR.finditer(text):                    # docker images
+            pos = h.end() + 1
+            for line in text[pos:].split("\n"):
+                row = re.match(r"(?P<repo>\S+)\s+\S+\s+[0-9a-f]{12}\s", line)
+                if not row: break
+                repo, public, local = image_parts(row.group("repo"))
+                if local and repo != "<none>": add_local_image(pos, repo)
                 pos += len(line) + 1
 
         # --- 8) özel terimler ---

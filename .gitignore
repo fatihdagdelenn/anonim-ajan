@@ -1,0 +1,14 @@
+.anonim_ajan.json
+anonim-defteri*.json
+*.log
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+.venv/
+venv/
+Thumbs.db
+desktop.ini
+.DS_Store
+.pytest_cache/
