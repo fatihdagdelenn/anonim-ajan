@@ -1,21 +1,42 @@
 # Anonim Ajan
 
 Log ve config çıktılarını ChatGPT, Claude gibi AI araçlarına göndermeden önce
-**IP, DNS, hostname, e-posta, MAC ve config değerlerini** tutarlı sahtelerle
-maskeleyen, AI'ın cevabını da **gerçek değerlere geri çeviren** masaüstü aracı.
+**IP, DNS, hostname, e-posta, MAC, config değerlerini ve parolaları** türünü
+söyleyen etiketlerle maskeleyen, AI'ın cevabını da **gerçek değerlere geri
+çeviren** masaüstü aracı.
 
 Her şey bilgisayarında çalışır. Hiçbir ağ bağlantısı yoktur, veri dışarı çıkmaz.
 
 ![Anonim Ajan](ekran.png)
 
 ```
-Gerçek :  datasource jboss → app01.fatih.com.tr (10.10.10.20) yanıt vermiyor
-Maskeli:  datasource db_d78 → relay66z.serdivan.systems (10.104.15.66) yanıt vermiyor
+Gerçek :  datasource jboss → app01.sirket.com.tr (10.10.10.20), password=Gizli42
+Maskeli:  datasource DS_1 → HOST_1.DOMAIN_1 (IP_1), password=PAROLA_1
 ```
 
-Aynı gerçek değer her yerde aynı sahteye gider. Aynı alan adının sunucuları
-aynı sahte köke düşer. Böylece AI değerler arasındaki ilişkiyi görüp doğru
-yorum yapabilir.
+Aynı gerçek değer her yerde aynı etikete gider; aynı alan adının sunucuları
+aynı `DOMAIN_n`'i paylaşır. AI neyin gizlendiğini ve değerler arasındaki
+ilişkiyi görür, cevabında da aynı etiketleri kullanır. Cevabı kopyaladığında
+etiketler gerçek değerlere döner.
+
+### Etiketler
+
+| Etiket | Ne gizlenir | Örnek |
+|---|---|---|
+| `IP_n`, `IPV6_n` | IP adresleri | `10.10.10.20` → `IP_1` |
+| `HOST_n`, `DOMAIN_n` | Sunucu adları ve alan adları | `app01.sirket.com.tr` → `HOST_1.DOMAIN_1` |
+| `MAIL_n` | E-posta adresleri | `admin@sirket.com.tr` → `MAIL_1` |
+| `MAC_n` | MAC adresleri | `00:1B:44:11:3A:B7` → `MAC_1` |
+| `DS_n`, `JNDI_n`, `DB_n`, `SCHEMA_n` | Datasource, JNDI, veritabanı, şema adları | `datasource jboss` → `datasource DS_1` |
+| `KULLANICI_n`, `AYAR_n` | Kullanıcı adları ve diğer config değerleri | `<user-name>appuser</user-name>` → `KULLANICI_1` |
+| `PAROLA_n`, `TOKEN_n`, `ANAHTAR_n` | Parolalar, token'lar, özel anahtarlar | `şifre: Ankara06` → `şifre: PAROLA_1` |
+| `TARIH_n` | Tarihler (isteğe bağlı) | `01.10.2026` → `TARIH_1` |
+| `OZEL_n` | Özel terimler alanına yazdıkların | `ACME A.Ş.` → `OZEL_1` |
+
+Etiketler bilerek `<url1>` gibi köşeli parantez içinde değil: ChatGPT ve
+Claude cevapları HTML olarak gösterdiği için `<...>` ekranda kaybolabilir,
+XML config içinde de etiket gibi görünür. `IP_1` biçimi Markdown, XML, JSON
+ve kabukta bozulmadan kalır.
 
 ## Dosyalar
 
@@ -56,11 +77,11 @@ Uygulama açılınca pano erişimi varsa **Oto-izle** anahtarı kendiliğinden a
 
 1. Logu kopyala (`Ctrl+C`). Panodaki metin anında maskelenir.
 2. AI'a yapıştır (`Ctrl+V`). Giden metin zaten maskelidir.
-3. AI'ın cevabını kopyala (`Ctrl+C`). Sahte değerler gerçeklerine geri çevrilir.
+3. AI'ın cevabını kopyala (`Ctrl+C`). Etiketler gerçek değerlere geri çevrilir.
 4. Editörüne veya terminaline yapıştır (`Ctrl+V`).
 
 Uygulama kopyaladığın metnin log mu AI cevabı mı olduğuna içeriğe bakarak karar
-verir. Metinde defterdeki sahteler baskınsa geri çevirir, yeni hassas değer
+verir. Metinde defterdeki etiketler baskınsa geri çevirir, yeni hassas değer
 varsa maskeler. Emin olamazsa hep maskeler, böylece gerçek veri yanlışlıkla
 AI'a gitmez.
 
@@ -77,11 +98,11 @@ Sağ üstteki **Yön** seçicisiyle davranışı değiştirebilirsin:
 
 - **Anonimleştir:** logu yapıştır, kategorileri seç, *Anonimleştir* (veya `Ctrl+Enter`), *Kopyala*.
 - **Geri Çevir:** AI cevabını yapıştır, *Geri çevir* (veya `Ctrl+Enter`), *Kopyala*.
-- **Defter:** gerçek ↔ sahte tablosu, en yeni kayıt üstte. Arama, dışa/içe
-  aktarma ve sıfırlama buradan.
+- **Defter:** gerçek ↔ etiket tablosu, en yeni kayıt üstte. Arama, dışa/içe
+  aktarma ve sıfırlama buradan. Parolalar burada `••••••••` olarak görünür.
 
-Kategoriler (IPv4, IPv6, DNS, E-posta, MAC, Host, Config, Özel) tek tıkla
-açılıp kapanır. Fazla maskeleyen bir kategori olursa kapatabilirsin.
+Kategoriler (IPv4, IPv6, DNS, E-posta, MAC, Host, Config, Parola, Tarih, Özel)
+tek tıkla açılıp kapanır. Tarih dışındakiler varsayılan olarak açıktır. Fazla maskeleyen bir kategori olursa kapatabilirsin.
 **Özel terimler** alanına firma adı gibi otomatik yakalanmayan kelimeleri
 virgülle ekleyebilirsin.
 
@@ -106,12 +127,27 @@ alan adları (`.com.tr` gibi iki seviyeli uzantılar doğru ayrılır), e-posta,
 MAC, `server01` / `db-prod-01` gibi sunucu adları, `datasource jboss` /
 `jndi-name="java:/AppDS"` / `<user-name>…` gibi config değerleri.
 
+**Parolalar ve anahtarlar:** anahtar adında `password`, `passwd`, `pwd`,
+`şifre`, `sifre`, `parola`, `secret`, `token`, `api_key` geçen her değer
+(`password=…`, `şifre: …`, `"password": "…"`, `<password>…</password>`,
+`spring.datasource.password=…`, `DB_PASSWORD=…`, `--password …`), bağlantı
+adresindeki parola (`jdbc:mysql://root:Parola@host`), `Authorization: Bearer …`,
+JWT, AWS ve GitHub anahtarları, `-----BEGIN PRIVATE KEY-----` blokları. Aynı
+parola metnin başka bir yerinde etiketsiz geçerse orada da gizlenir.
+`${DB_PASS}` gibi değişken atıflarına, `password: null` gibi boş değerlere
+dokunulmaz.
+
+**Tarihler:** `2026-10-01`, `01.10.2026`, `30/09/2026`, `01/Oct/2026`,
+`Oct 1, 2026`, `1 Ekim 2026` her zaman tanınır, böylece asla IP ya da sunucu
+adı sanılmaz. Varsayılan olarak maskelenmez, çünkü hata ayıklarken zaman
+çizelgesi önemlidir. Tarihleri de gizlemek istersen **TARİH** kategorisini aç.
+
 **Dokunulmaz** (AI'ın logu anlaması için gerekli, hassas değil):
 - Java paket ve sınıf adları: `org.jboss.as.controller`, `AbstractPool.java`
 - Dosya adları: `server.log`, `standalone.xml`
 - Hata kodları: `WFLYCTL0013`, `ORA-00942`, `HHH000412`
-- Log gürültüsü: `thread-12`, `pool-3`, `worker-7`, zaman damgaları
-- Sürümler: `java17`, `rhel8`, `TLSv1.2`, `UTF-8`
+- Log gürültüsü: `thread-12`, `pool-3`, `worker-7`, saatler
+- Sürümler: `java17`, `rhel8`, `jboss-eap-7.4.12`, `postgresql-14`, `TLSv1.2`
 - Kamusal adresler: `127.0.0.1`, `github.com`, `redhat.com`, `docs.oracle.com`
 
 ## Paketleme
@@ -181,13 +217,18 @@ Açılışta başlamasın istersen `~/.config/autostart/anonim-ajan.desktop` dos
 
 `anonimlestirici.html` kurulum gerektirmez ve tamamen tarayıcıda çalışır.
 Pano yakalama ve kısayol yoktur: metni yapıştırıp butonlarla çalışırsın.
-Java paket adı, dosya adı ve hata kodu filtreleri şimdilik yalnızca masaüstü
-sürümünde var.
+Etiket sistemi, parola ve tarih tanıma ile Java paket adı / dosya adı / hata
+kodu filtreleri şimdilik yalnızca masaüstü sürümünde var; tarayıcı sürümü
+hâlâ gerçekçi sahte değerler üretir.
 
 ## Veri ve gizlilik
 
 - Eşleştirme defteri `~/.anonim_ajan.json` dosyasında durur. Bilgisayarı
   kapatıp açsan bile geri çevirme çalışır.
+- **Parolalar, token'lar ve anahtarlar diske hiç yazılmaz**, dışa aktarılan
+  deftere de girmez; yalnızca uygulama açıkken bellekte tutulur. Uygulamayı
+  kapatıp açtıktan sonra `PAROLA_1` gibi etiketler geri çevrilmez, olduğu gibi
+  kalır.
 - **Bu dosya ve dışa aktarılan defterler gerçek IP, hostname ve e-postaları
   düz metin olarak içerir.** Kimseyle paylaşma, depoya ekleme. `.gitignore`
   bunları zaten dışlıyor.
@@ -204,7 +245,9 @@ sürümünde var.
 - **"Pano: ✗":** `pip install pyperclip`. Linux'ta ayrıca `sudo apt install xclip`.
 - **Kopyalayınca bir şey olmuyor:** OTO-İZLE düğmesi yeşil (AÇIK) olmalı ve
   metinde maskelenecek bir değer bulunmalı.
-- **Eski sürümden güncelledin:** açılışta "eski formatta kayıt" uyarısı çıkarsa
-  Defter sekmesinden bir kez **Sıfırla**.
+- **Eski sürümden güncelledin:** eski sürümün gerçekçi sahte değerleri
+  (`relay66z.serdivan.systems` gibi) hâlâ geri çevrilir. Açılışta "eski
+  biçimde kayıt" uyarısı çıkarsa yeni etiketlere geçmek için Defter sekmesinden
+  bir kez **Sıfırla**.
 - **Python 3.14:** bazı paketlerin bu sürüm için hazır kurulumu henüz yoksa
   Python 3.12 veya 3.13 kullan.

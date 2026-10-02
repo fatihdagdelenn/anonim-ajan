@@ -196,10 +196,10 @@
         <div class="pbody">
           <p class="hint">Log, config, hata çıktısı — hassas metni buraya yapıştır. Aşağıdan neyin tespit edileceğini seçebilirsin.</p>
           <textarea id="src" placeholder="Örn:
-server01  10.10.10.20   dns: x.fatih.com
+server01  10.10.10.20   dns: x.sirket.com
 gateway   192.168.1.1
-admin@fatih.com  MAC 00:1B:44:11:3A:B7
-web02.fatih.com -> 172.16.5.9"></textarea>
+admin@sirket.com  MAC 00:1B:44:11:3A:B7
+web02.sirket.com -> 172.16.5.9"></textarea>
 
           <div class="toggles" id="toggles">
             <label class="tog"><input type="checkbox" data-t="ipv4" checked> IPv4</label>
@@ -211,7 +211,7 @@ web02.fatih.com -> 172.16.5.9"></textarea>
             <label class="tog"><input type="checkbox" data-t="config" checked> Config değerleri</label>
             <label class="tog"><input type="checkbox" data-t="custom" checked> Özel terimler</label>
           </div>
-          <input class="custom-in" id="customTerms" placeholder="Özel terimler (virgülle): server01, ACME A.Ş., k.dagdelen">
+          <input class="custom-in" id="customTerms" placeholder="Özel terimler (virgülle): server01, ACME A.Ş., proje-x">
 
           <div class="row">
             <button class="primary" id="btnMask">Anonimleştir</button>
@@ -237,7 +237,7 @@ web02.fatih.com -> 172.16.5.9"></textarea>
         </div>
         <div class="pbody">
           <p class="hint">AI'ın verdiği cevabı (maskeli değerlerle) buraya yapıştır. Sahte değerler tekrar gerçekleriyle değiştirilir.</p>
-          <textarea id="reply" placeholder="AI'ın cevabını buraya yapıştır — örn. 'srv1.dagdelen.net sunucusunda 192.168.23.22 adresini kontrol et...'"></textarea>
+          <textarea id="reply" placeholder="AI'ın cevabını buraya yapıştır — örn. 'srv1.meridyen.net sunucusunda 192.168.23.22 adresini kontrol et...'"></textarea>
           <div class="row">
             <button class="primary" id="btnRestore">Geri çevir</button>
             <button class="ghost" id="btnCopyRestored" disabled>Sonucu kopyala</button>
@@ -279,9 +279,9 @@ web02.fatih.com -> 172.16.5.9"></textarea>
   </div>
 
   <p class="footnote">
-    <b>Nasıl çalışır:</b> Aynı gerçek değer her zaman aynı sahteye eşlenir; <code>x.fatih.com</code> ile <code>y.fatih.com</code> aynı sahte kök domaine düşer, böylece AI ilişkileri koruyup mantık kurabilir.
+    <b>Nasıl çalışır:</b> Aynı gerçek değer her zaman aynı sahteye eşlenir; <code>x.sirket.com</code> ile <code>y.sirket.com</code> aynı sahte kök domaine düşer, böylece AI ilişkileri koruyup mantık kurabilir.
     Geri çevirme sahte→gerçek eşleşmesini kullanır — <b>yeni bir oturumda geri çevireceksen defteri dışa aktar</b>, çünkü eşleşmeler yalnızca bu sekmede tutulur.
-    <b>Hostname:</b> <code>server01</code>, <code>web02</code>, <code>db-prod-01</code> gibi rakam içeren isimler otomatik yakalanır ve bare <code>server01</code> ile <code>server01.fatih.com</code> içindeki etiket aynı sahteye eşlenir. <code>hostname:</code> / <code>Host =</code> / <code>CN=</code> satırlarındaki rakamsız isimler de yakalanır; bunun dışındaki rakamsız isimleri “Özel terimler” alanına ekle. Tespit sezgiseldir — göndermeden önce defteri gözden geçir.
+    <b>Hostname:</b> <code>server01</code>, <code>web02</code>, <code>db-prod-01</code> gibi rakam içeren isimler otomatik yakalanır ve bare <code>server01</code> ile <code>server01.sirket.com</code> içindeki etiket aynı sahteye eşlenir. <code>hostname:</code> / <code>Host =</code> / <code>CN=</code> satırlarındaki rakamsız isimler de yakalanır; bunun dışındaki rakamsız isimleri “Özel terimler” alanına ekle. Tespit sezgiseldir — göndermeden önce defteri gözden geçir.
     <br><b>Config değerleri:</b> <code>datasource jboss</code>, <code>database name: appdb</code>, <code>schema=mySchema</code>, <code>jndi ...</code> gibi anahtar→değer içeriklerindeki değer yakalanır ve metnin her yerinde tutarlı şekilde maskelenir. IP artık <code>ada_192.168.22.22</code> gibi string'e gömülü olsa da yakalanır.
   </p>
 </div>
@@ -301,7 +301,7 @@ web02.fatih.com -> 172.16.5.9"></textarea>
 
   // ---------- sahte değer havuzları ----------
   const FAKE_TLDS = ["net","org","io","com","dev","cloud","systems","co","tech","net.tr"];
-  const FAKE_NAMES = ["dagdelen","meridyen","cinar","poyraz","tulpar","boruk","yildizlar",
+  const FAKE_NAMES = ["kestane","meridyen","cinar","poyraz","tulpar","boruk","yildizlar",
     "korelasyon","efrasiya","tuncbilek","kayra","orionteknik","levantis","zumrut","karadeniz",
     "batuhan","serdivan","sedefli","argos","yelkovan","nirvana","ozanteknoloji","paravel"];
   const FAKE_LABELS = ["srv","node","gw","host","edge","core","app","db","web","vm","proxy","relay",

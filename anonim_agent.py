@@ -4,7 +4,7 @@
 Anonim Ajan — log/config anonimleştirici (masaüstü).
 
 Log ve config çıktılarındaki IP, DNS, hostname, e-posta, MAC ve config
-değerlerini AI'a göndermeden önce tutarlı sahtelerle maskeler; AI'ın
+değerlerini AI'a göndermeden önce IP_1, HOST_1 gibi etiketlerle maskeler; AI'ın
 cevabını gerçek değerlere geri çevirir. Her şey yerelde çalışır.
 
 Kullanım:
@@ -25,7 +25,7 @@ macOS: kısayol/pano için Sistem Ayarları > Gizlilik ve Güvenlik > Erişilebi
        + Girdi İzleme izni gerekir. Linux: pano için 'xclip' veya 'xsel' gerekir.
 """
 
-import json, os, re, sys, threading, time, random
+import json, os, re, sys, threading, time
 
 try:
     import pyperclip
@@ -61,14 +61,28 @@ STORE = os.path.join(os.path.expanduser("~"), ".anonim_ajan.json")
 # =====================================================================
 #  ÇEKİRDEK ANONİMLEŞTİRME MANTIĞI
 # =====================================================================
+#
+#  Hassas değerler türünü söyleyen numaralı etiketlerle değiştirilir:
+#     10.10.10.20            → IP_1
+#     app01.sirket.com.tr    → HOST_1.DOMAIN_1     (aynı alan adı → aynı DOMAIN_n)
+#     admin@sirket.com.tr    → MAIL_1
+#     datasource jboss       → datasource DS_1
+#     password=Gizli123      → password=PAROLA_1   (diske yazılmaz)
+#
+#  Etiketler bilerek <...> içinde DEĞİL: AI arayüzleri <url1> gibi şeyleri HTML
+#  sanıp yutabiliyor, XML config içinde de etiket gibi görünüyor. IP_1 biçimi
+#  Markdown, XML, JSON ve kabukta bozulmadan kalır; gerçek logda da geçmez.
 
-FAKE_TLDS  = ["net","org","io","com","dev","cloud","systems","co","tech","net.tr"]
-FAKE_NAMES = ["dagdelen","meridyen","cinar","poyraz","tulpar","boruk","yildizlar",
-    "korelasyon","efrasiya","tuncbilek","kayra","orionteknik","levantis","zumrut",
-    "karadeniz","batuhan","serdivan","argos","yelkovan","nirvana","paravel"]
-FAKE_LABELS= ["srv","node","gw","host","edge","core","app","db","web","vm","proxy",
-    "relay","cache","auth","mail","ns","dc","lb","api","svc"]
-CFG_WORDS  = ["ds","db","schema","pool","svc","app","cat","cfg"]
+# Etiket önekleri (uzunlar önce — "IPV6" "IP"den önce denenmeli)
+TOKEN_PREFIXES = ["KULLANICI", "ANAHTAR", "PAROLA", "DOMAIN", "SCHEMA", "TARIH", "TOKEN",
+                  "IPV6", "HOST", "MAIL", "JNDI", "AYAR", "OZEL", "MAC", "IP", "DS", "DB"]
+# Önünde harf/rakam olmasın (MYDB_1 etiket değil); arkasında rakam olmasın (IP_1 ≠ IP_10).
+# "ada_IP_1" ve "TARIH_1T23:00" gibi bitişik kullanımlar da tanınır.
+TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(?:%s)_\d+(?!\d)" % "|".join(TOKEN_PREFIXES))
+def is_token(s): return bool(TOKEN_RE.fullmatch(s or ""))
+
+TYPE_PREFIX = {"ipv4": "IP", "ipv6": "IPV6", "mac": "MAC", "hostname": "HOST", "domain": "DOMAIN",
+               "email": "MAIL", "date": "TARIH", "custom": "OZEL"}
 
 PAT = {
     "ipv4":  re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?![\d.])"),
@@ -77,18 +91,71 @@ PAT = {
     "domain":re.compile(r"(?<![A-Za-z0-9.@\-])(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}(?![A-Za-z0-9\-])"),
     "mac":   re.compile(r"(?<![0-9A-Fa-f:\-])(?:[0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f:\-])"),
 }
-PRIO = {"custom":6,"email":5,"domain":4,"ipv6":3,"ipv4":2,"mac":1,"hostname":0.5,"config":0}
+# Çakışmada büyük olan kazanır. Tarih IP/IPv6/MAC/hostname'den önce gelir: "10.10.2026" asla IP sanılmaz.
+PRIO = {"secret": 7, "custom": 6, "email": 5, "domain": 4, "date": 3.5, "ipv6": 3, "ipv4": 2,
+        "mac": 1, "hostname": 0.5, "config": 0}
 
+# ---- tarih ----
+_D = r"(?:0?[1-9]|[12]\d|3[01])"
+_M = r"(?:0?[1-9]|1[0-2])"
+_Y = r"(?:19|20)\d{2}"
+_MON = ("january|february|march|april|june|july|august|september|october|november|december|"
+        "sept|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|"
+        "ağustos|agustos|şubat|subat|haziran|temmuz|aralık|aralik|nisan|mayıs|mayis|kasım|kasim|"
+        "eylül|eylul|ocak|mart|ekim")
+_DATE_BODY = "|".join([
+    _Y + r"([\-/.])" + _M + r"\1" + _D,                              # 2026-10-01  2026/10/01
+    _D + r"([./\-])" + _M + r"\2" + _Y,                               # 01.10.2026  1/10/2026
+    r"(?:0[1-9]|[12]\d|3[01])([./])(?:0[1-9]|1[0-2])\3\d{2}",         # 01.10.26 (sürüm 7.4.12 değil)
+    _D + r"[ \-/.]?(?:" + _MON + r")\.?[ \-/.,]*" + _Y,              # 01 Oct 2026  01/Oct/2026  1 Ekim 2026
+    r"(?:" + _MON + r")\.?[ \-]" + _D + r",?[ \-]" + _Y,              # Oct 1, 2026
+])
+DATE_RE = re.compile(r"(?<!\d)(?<!\d[.\-/])(?:" + _DATE_BODY + r")(?!\d|[.\-/]\d)", re.I)
+
+# ---- parola / anahtar / token ----
+_PW_CORE  = r"passwd|password|passwort|passphrase|pwd|şifre|sifre|parola"
+_TOK_CORE = (r"client[_\-]?secret|secret[_\-]?key|private[_\-]?key|access[_\-]?key|api[_\-]?key|"
+             r"apikey|access[_\-]?token|auth[_\-]?token|refresh[_\-]?token|credentials?|secret|token")
+SECRET_KV_RE = re.compile(
+    r"(?<![\w.\-/])(?P<key>[\w.\-]*?(?P<core>" + _PW_CORE + "|" + _TOK_CORE + r")[\w.\-çğıöşüÇĞİÖŞÜ]*|pass)"
+    r"[\"']?[ \t]*(?::=|=>|->|[:=>])[ \t]*"
+    r"(?:(?P<q>[\"'])(?P<v1>[^\"'\r\n]{1,256})(?P=q)|(?P<v2>[^\s\"'<>,;&)}\]]{1,256}))", re.I)
+SECRET_CLI_RE = re.compile(r"(?<![\w\-])--?(?P<core>password|passwd|pass|pwd|token|api-key|secret)"
+                           r"[ =](?P<v>[^\s\"']{2,256})", re.I)
+SECRET_URL_RE = re.compile(r"\b[a-z][a-z0-9+.\-]*://(?P<user>[^\s:/@]{1,64}):(?P<pw>[^\s/@]{1,128})@", re.I)
+SECRET_BEARER_RE = re.compile(r"\b(?:Bearer|Basic)\s+(?P<v>[A-Za-z0-9\-._~+/]{8,}=*)")
+SECRET_PEM_RE = re.compile(r"-----BEGIN ([A-Z ]*)PRIVATE KEY-----[\s\S]+?-----END \1PRIVATE KEY-----")
+SECRET_PATTERNS = [   # biçiminden tanınan anahtarlar
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),                                  # AWS erişim anahtarı
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"),                        # GitHub token
+    re.compile(r"\beyJ[\w\-]{8,}\.[\w\-]{8,}\.[\w\-]{8,}\b"),            # JWT
+]
+SECRET_SKIP = {"null", "none", "nil", "true", "false", "undefined", "empty", "yes", "no", "required",
+               "optional", "string", "hidden", "masked", "redacted"}
+
+def _secret_prefix(core):
+    c = (core or "").lower()
+    if re.fullmatch(_PW_CORE + "|pass", c): return "PAROLA"
+    if "private" in c: return "ANAHTAR"
+    return "TOKEN"
+
+def _secret_ok(v, prefix):
+    if not v or len(v) < 2 or is_token(v): return False
+    low = v.lower()
+    if low in SECRET_SKIP or set(v) <= set("*•#x?."): return False          # boş / zaten maskeli
+    if re.match(r"^(\$\{|%\(|\{\{|<|\$[A-Z_])", v): return False             # ${DB_PASS} gibi değişken atıfları
+    if prefix == "TOKEN" and v.isdigit(): return False                      # max_tokens: 4096
+    return True
+
+# ---- hostname ----
 HOST_BLOCK = set(["md5","md2","sha1","sha2","sha3","sha224","sha256","sha384","sha512",
     "crc32","adler32","base64","base32","utf8","utf16","utf32","latin1","iso88591","x8664",
     "amd64","arm64","win32","win64","http2","http3","tls10","tls11","tls12","tls13","ssl2",
     "ssl3","ipv4","ipv6","oauth2","ec2","s3","k8s","i18n","l10n","a11y","p2p","log4j","ext4",
-    "fat32","ntfs","rfc822"])
+    "fat32","ntfs","rfc822","log4j2","tlsv1","tlsv12","tlsv13","sslv3","utf8mb4","h2","md4","ripemd160"])
 
 KW_RE  = re.compile(r"\b(?:hostname|nodename|node|computername|computer|dnsname|host|cn)\b\s*[:=]\s*[\"']?([A-Za-z][A-Za-z0-9\-]{1,62})[\"']?", re.I)
 TOK_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*\b")
-
-HOST_BLOCK |= {"log4j2","tlsv1","tlsv12","tlsv13","sslv3","utf8mb4","h2","md4","ripemd160"}
 
 # "thread-12", "pool-3", "worker-7", "port8080"… hostname değil — log gürültüsü
 HOST_NOISE = {"thread","threads","pool","worker","workers","task","tasks","exec","executor",
@@ -124,7 +191,7 @@ BENIGN_IPS = {"127.0.0.1","0.0.0.0","255.255.255.255","8.8.8.8","8.8.4.4","1.1.1
 
 
 def _split_domain(d):
-    """('x','fatih') , 'fatih.com.tr'  → alt etiketler ve kök (iki seviyeli uzantıları tanır)"""
+    """'app01.sirket.com.tr' → (['app01'], 'sirket.com.tr') — iki seviyeli uzantıları tanır."""
     labels = d.split(".")
     n = 3 if len(labels) >= 3 and ".".join(labels[-2:]).lower() in TWO_LEVEL else 2
     return labels[:-n], ".".join(labels[-n:])
@@ -151,23 +218,32 @@ CFG_STRICT = ["database","databasename","db name","db-name","dbname","db","schem
     "context root","context-root"]
 def _cfg_alt(keys):
     return "|".join(r"\s+".join(re.escape(p) for p in k.split()) for k in sorted(keys, key=len, reverse=True))
-_CFG_VAL = r"\s*[\"']?([A-Za-z_][\w.\-\/:]*)[\"']?"
-CFG_FREE_RE   = re.compile(r"\b(?:" + _cfg_alt(CFG_FREE) + r")\b\s*(?:[:=>]|:=|=>|->)?" + _CFG_VAL, re.I)
-CFG_STRICT_RE = re.compile(r"\b(?:" + _cfg_alt(CFG_STRICT) + r")\b\s*(?:[:=>]|:=|=>|->)" + _CFG_VAL, re.I)
+_CFG_VAL = r"[ \t]*[\"']?([A-Za-z_][\w.\-\/:]*)[\"']?"
+CFG_FREE_RE   = re.compile(r"(?<!/)\b(" + _cfg_alt(CFG_FREE) + r")\b[ \t]*(?:[:=>]|:=|=>|->)?" + _CFG_VAL, re.I)
+CFG_STRICT_RE = re.compile(r"(?<!/)\b(" + _cfg_alt(CFG_STRICT) + r")\b[ \t]*(?:[:=>]|:=|=>|->)" + _CFG_VAL, re.I)
 CFG_STOP = set(["is","are","was","were","be","been","the","a","an","of","for","to","in","on",
     "and","or","not","no","yes","true","false","null","none","name","value","type","this","that",
     "with","ise","olarak","bir","ve","veya","için","ile","adı","adi","ismi","olan","gibi"])
 CFG_STOP |= {k.lower() for k in CFG_FREE + CFG_STRICT}   # "<datasource jndi-name=…>" → "jndi-name" değer değil
 
-LABELS = {"ipv4":"IPv4","ipv6":"IPv6","domain":"DNS","email":"E-POSTA","mac":"MAC",
-          "hostname":"HOST","config":"CONFIG","custom":"ÖZEL"}
-ALL_TYPES = ("ipv4","ipv6","domain","email","mac","hostname","config","custom")
+def _cfg_prefix(key):
+    """Config anahtarına göre etiket: datasource jboss → DS_1, user-name=sa → KULLANICI_1 …"""
+    k = re.sub(r"[\s_\-]", "", key.lower())
+    if k.startswith("jndi"): return "JNDI"
+    if "datasource" in k or k in ("dsname", "pool", "poolname", "connectionpool"): return "DS"
+    if "schema" in k: return "SCHEMA"
+    if k.startswith(("user", "uid")): return "KULLANICI"
+    if k in ("database", "databasename", "databasename", "db", "dbname", "catalog", "sid",
+             "servicename", "instance", "instancename"): return "DB"
+    return "AYAR"
 
-# Sahte sonekleri — "srv41k", "db_k41": gerçek isimlerle (app1, db2, web01) çakışmaz
-_SUFFIX_CH = "abcdefghjkmnpqrstuvwxyz"
-# Eski sürümün kısa sahteleri (app2, db8, pool45): otomatik yön kararında güvenilmez
-_LEGACY_RE = re.compile(r"[a-z]+\d{1,2}")
-def _is_legacy(fake): return bool(_LEGACY_RE.fullmatch(fake))
+LABELS = {"ipv4":"IPv4","ipv6":"IPv6","domain":"DNS","email":"E-POSTA","mac":"MAC",
+          "hostname":"HOST","config":"CONFIG","secret":"PAROLA","date":"TARİH","custom":"ÖZEL"}
+ALL_TYPES = ("ipv4","ipv6","domain","email","mac","hostname","config","secret","date","custom")
+# Tarihler varsayılan olarak yalnızca TANINIR (IP sanılmaz) ama maskelenmez: zaman çizelgesi
+# hata ayıklamak için gerekli. İstenirse "TARİH" seçeneği açılır → TARIH_1.
+DEFAULT_OFF = {"date"}
+def default_opts(): return {t: t not in DEFAULT_OFF for t in ALL_TYPES}
 
 
 def _looks_like_host(tok):
@@ -180,98 +256,103 @@ def _looks_like_host(tok):
     if first in HOST_NOISE: return False                                   # thread-12, pool-3
     if first in HOST_PRODUCT and re.fullmatch(r"[a-z]+[-_]?v?\d+(?:[.\-_]\d+)*[a-z]?", low):
         return False                                                       # java17, rhel8
+    if first in HOST_PRODUCT and re.fullmatch(r"[a-z]+(?:-[a-z]+)*-v?\d+", low):
+        return False                                                       # jboss-eap-7, postgresql-14
     if not re.search(r"[a-z]", tok) and re.search(r"\d{4,}", tok):
         return False                                                       # WFLYCTL0013, ORA-00942
     if re.fullmatch(r"[0-9a-f\-]{8,}", low): return False                  # hash / UUID parçası
     if "-" not in tok and len(first) < 2: return False
     return True
 
+def _bounded(v):
+    return re.compile(r"(?<![A-Za-z0-9._\-\/])" + re.escape(v) + r"(?![A-Za-z0-9_\-\/]|\.[A-Za-z0-9])")
+
 
 class Mapper:
+    """Gerçek ↔ etiket defteri. Parola/anahtar/token eşleşmeleri yalnızca bellekte tutulur."""
     def __init__(self):
-        self.entries = []
-        self.real_to_fake = {}
-        self.used_fakes = set()
-        self.base_map = {}
-        self.label_map = {}
-        self.used_bases = set()
-        self.used_labels = set()
-        self.custom_terms = []
         self.lock = threading.RLock()
+        self._reset()
+        self.custom_terms = []
         self.load()
 
-    def _unique(self, gen, seen):
-        for _ in range(400):
-            v = gen()
-            if v not in seen and v not in self.used_fakes:
-                return v
-        base = gen(); n = 2; v = base
-        while v in seen or v in self.used_fakes:
-            v = base + str(n); n += 1
-        return v
+    def _reset(self):
+        self.entries = []          # [{real, fake, type, secret?}]
+        self.real_to_fake = {}     # gerçek → etiket (diske yazılır)
+        self.secret_map = {}       # gerçek parola → etiket (yalnızca bellek)
+        self.tok = {}              # etiket → gerçek
+        self.counters = {}         # önek → son numara
 
-    def _fake_ipv4(self, _):
-        heads = [
-            lambda: "10.%d.%d.%d"  % (random.randint(0,254), random.randint(0,254), random.randint(1,254)),
-            lambda: "192.168.%d.%d"% (random.randint(0,254), random.randint(1,254)),
-            lambda: "172.%d.%d.%d" % (random.randint(16,31), random.randint(0,254), random.randint(1,254)),
-        ]
-        return self._unique(lambda: random.choice(heads)(), self.used_fakes)
-    def _hex(self, n): return "".join(random.choice("0123456789abcdef") for _ in range(n))
-    def _fake_ipv6(self, _):
-        return self._unique(lambda: ":".join(self._hex(4) for _ in range(8)), self.used_fakes)
-    def _fake_mac(self, _):
-        return self._unique(lambda: ":".join(self._hex(2) for _ in range(6)).upper(), self.used_fakes)
-    def _sfx(self):
-        return "%02d%s" % (random.randint(10,99), random.choice(_SUFFIX_CH))
-    def _fake_config(self, _):
-        return self._unique(lambda: "%s_%s%02d" % (random.choice(CFG_WORDS), random.choice(_SUFFIX_CH),
-                                                   random.randint(10,99)), self.used_fakes)
-    def _fake_base(self, real_base):
-        if real_base in self.base_map: return self.base_map[real_base]
-        v = self._unique(lambda: "%s.%s" % (random.choice(FAKE_NAMES), random.choice(FAKE_TLDS)), self.used_bases)
-        self.base_map[real_base] = v; self.used_bases.add(v); return v
-    def _fake_label(self, real_label):
-        if real_label in self.label_map: return self.label_map[real_label]
-        v = self._unique(lambda: random.choice(FAKE_LABELS) + self._sfx(), self.used_labels)
-        self.label_map[real_label] = v; self.used_labels.add(v); return v
-    def _fake_domain(self, d):
-        subs, base = _split_domain(d)
-        if not subs and "." not in base: return d
-        return ".".join([self._fake_label(s) for s in subs] + [self._fake_base(base)])
-    def _fake_email(self, e):
-        at = e.index("@"); dom = e[at+1:]
-        local = self._unique(lambda: random.choice(FAKE_LABELS) + self._sfx(), self.used_fakes)
-        return "%s@%s" % (local, self._register(dom, "domain", self._fake_domain))
+    # ---- etiket üretimi ----
+    def _token(self, prefix):
+        n = self.counters.get(prefix, 0) + 1
+        self.counters[prefix] = n
+        return "%s_%d" % (prefix, n)
 
-    def _register(self, real, typ, gen):
-        if real in self.real_to_fake: return self.real_to_fake[real]
-        fake = gen(real)
-        self.real_to_fake[real] = fake; self.used_fakes.add(fake)
-        self.entries.append({"real": real, "fake": fake, "type": typ})
-        return fake
+    def _register(self, real, typ, prefix, secret=False):
+        m = self.secret_map if secret else self.real_to_fake
+        if real in m: return m[real]
+        t = self._token(prefix)
+        m[real] = t; self.tok[t] = real
+        e = {"real": real, "fake": t, "type": typ}
+        if secret: e["secret"] = True
+        self.entries.append(e)
+        return t
 
-    def _get_fake(self, value, typ):
-        return {
-            "ipv4":     lambda: self._register(value, typ, self._fake_ipv4),
-            "ipv6":     lambda: self._register(value, typ, self._fake_ipv6),
-            "mac":      lambda: self._register(value, typ, self._fake_mac),
-            "hostname": lambda: self._register(value, typ, self._fake_label),
-            "config":   lambda: self._register(value, typ, self._fake_config),
-            "email":    lambda: self._register(value, typ, self._fake_email),
-            "domain":   lambda: self._register(value, typ, self._fake_domain),
-            "custom":   lambda: self._register(value, typ, lambda _: self._unique(lambda: "OZEL_%d" % random.randint(1000,9999), self.used_fakes)),
-        }[typ]()
+    def _get_fake(self, value, typ, prefix=None):
+        if typ == "domain":
+            subs, base = _split_domain(value)
+            return ".".join([self._register(s, "hostname", "HOST") for s in subs] +
+                            [self._register(base, "domain", "DOMAIN")])
+        if typ == "secret":
+            return self._register(value, typ, prefix or "PAROLA", secret=True)
+        return self._register(value, typ, prefix or TYPE_PREFIX.get(typ, "AYAR"))
 
-    def _collect(self, text, opts=None, skip=frozenset()):
-        """Hassas değerleri bulur. `skip`: zaten sahte olan değerler — dokunulmaz."""
-        if opts is None:
-            opts = {k: True for k in ALL_TYPES}
+    # ---- tespit ----
+    def _collect(self, text, opts=None):
+        """Hassas değerleri bulur: [(başlangıç, bitiş, değer, tür, önek)]. Mevcut etiketlere dokunmaz."""
+        opts = dict(default_opts(), **(opts or {}))
         found = []
+        add = lambda s, e, v, t, p=None: found.append((s, e, v, t, p))
+
+        if opts.get("secret"):
+            secrets = {}
+            for m in SECRET_KV_RE.finditer(text):
+                p = _secret_prefix(m.group("core") if m.group("key").lower() != "pass" else "pass")
+                g = "v1" if m.group("v1") is not None else "v2"
+                v = m.group(g)
+                if g == "v2": v = v.rstrip(".:")
+                if _secret_ok(v, p):
+                    add(m.start(g), m.start(g) + len(v), v, "secret", p); secrets[v] = p
+            for m in SECRET_CLI_RE.finditer(text):
+                p = _secret_prefix(m.group("core")); v = m.group("v")
+                if _secret_ok(v, p): add(m.start("v"), m.end("v"), v, "secret", p); secrets[v] = p
+            for m in SECRET_URL_RE.finditer(text):
+                if _secret_ok(m.group("pw"), "PAROLA"):
+                    add(m.start("pw"), m.end("pw"), m.group("pw"), "secret", "PAROLA"); secrets[m.group("pw")] = "PAROLA"
+                    if opts.get("config") and not is_token(m.group("user")):
+                        add(m.start("user"), m.end("user"), m.group("user"), "config", "KULLANICI")
+            for m in SECRET_BEARER_RE.finditer(text):
+                add(m.start("v"), m.end("v"), m.group("v"), "secret", "TOKEN"); secrets[m.group("v")] = "TOKEN"
+            for m in SECRET_PEM_RE.finditer(text):
+                add(m.start(), m.end(), m.group(0), "secret", "ANAHTAR")
+            for rx in SECRET_PATTERNS:
+                for m in rx.finditer(text):
+                    add(m.start(), m.end(), m.group(0), "secret", "TOKEN"); secrets[m.group(0)] = "TOKEN"
+            # aynı parola metnin başka bir yerinde etiketsiz geçiyorsa onu da gizle
+            for v, p in secrets.items():
+                if len(v) >= 6:
+                    for m in _bounded(v).finditer(text): add(m.start(), m.end(), v, "secret", p)
+
         if opts.get("custom"):
             for term in sorted([t for t in self.custom_terms if t], key=len, reverse=True):
-                for m in re.finditer(re.escape(term), text, re.I):
-                    found.append((m.start(), m.end(), m.group(0), "custom"))
+                for m in re.finditer(r"(?<![A-Za-z0-9_])" + re.escape(term) + r"(?![A-Za-z0-9_])", text, re.I):
+                    add(m.start(), m.end(), m.group(0), "custom")
+
+        # Tarihler her zaman taranır: maskelenmeseler bile IP / hostname sanılmalarını engeller.
+        for m in DATE_RE.finditer(text):
+            add(m.start(), m.end(), m.group(0), "date")
+
         for typ in ("email","domain","ipv6","ipv4","mac"):
             if opts.get(typ):
                 for m in PAT[typ].finditer(text):
@@ -279,72 +360,68 @@ class Mapper:
                     if not v: continue
                     if typ == "domain" and not _valid_domain(v): continue
                     if typ == "ipv4" and _benign_ip(v): continue
-                    found.append((m.start(), m.end(), v, typ))
+                    add(m.start(), m.end(), v, typ)
         if opts.get("hostname"):
             seen = set()
             def push(s, e, v):
                 if (s, e) not in seen:
-                    seen.add((s, e)); found.append((s, e, v, "hostname"))
+                    seen.add((s, e)); add(s, e, v, "hostname")
             for m in KW_RE.finditer(text):
                 name = m.group(1); s = m.start() + m.group(0).rfind(name)
                 push(s, s + len(name), name)
             for m in TOK_RE.finditer(text):
+                if re.match(r"\.\d", text[m.end():m.end() + 2]): continue     # sürüm: xxx-7.4.12
                 if _looks_like_host(m.group(0)): push(m.start(), m.end(), m.group(0))
         if opts.get("config"):
-            values = set()
+            values = {}
             for rx in (CFG_FREE_RE, CFG_STRICT_RE):
                 for m in rx.finditer(text):
-                    val = re.sub(r"[:.]+$", "", m.group(1) or "")
-                    if len(val) >= 2 and val.lower() not in CFG_STOP:
-                        values.add(val)
-            for v in values:
-                for m in re.finditer(r"(?<![A-Za-z0-9._\-\/])" + re.escape(v) + r"(?![A-Za-z0-9._\-\/])", text):
-                    found.append((m.start(), m.end(), v, "config"))
+                    val = re.sub(r"[:.]+$", "", m.group(2) or "")
+                    if len(val) >= 2 and val.lower() not in CFG_STOP and not is_token(val):
+                        values.setdefault(val, _cfg_prefix(m.group(1)))
+            for v, p in values.items():
+                for m in _bounded(v).finditer(text):
+                    add(m.start(), m.end(), v, "config", p)
+
+        # mevcut etiketlerin (IP_1, HOST_2…) üstüne düşen hiçbir şey maskelenmez
+        protected = [(m.start(), m.end()) for m in TOKEN_RE.finditer(text)]
+        found = [f for f in found if not any(f[0] < pe and ps < f[1] for ps, pe in protected)]
+
         found.sort(key=lambda x: (x[0], -PRIO[x[3]], -(x[1]-x[0])))
         chosen = []; last_end = -1
-        for s, e, v, t in found:
-            if s >= last_end:
-                chosen.append((s, e, v, t)); last_end = e
-        if skip:
-            chosen = [c for c in chosen if c[2] not in skip]
+        for f in found:
+            if f[0] >= last_end:
+                chosen.append(f); last_end = f[1]
+        if not opts.get("date"):
+            chosen = [c for c in chosen if c[3] != "date"]    # tanındı, korundu, ama maskelenmez
         return chosen
 
-    def strong_fakes(self):
-        """Güvenilir sahteler (yeni format). Eski kısa sahteler gerçek isimlerle çakışabilir."""
-        return {e["fake"] for e in self.entries if not _is_legacy(e["fake"])}
-
+    # ---- genel API ----
     def anonymize(self, text, opts=None):
-        """Yeni hassas değerleri maskeler; metindeki mevcut sahtelere dokunmaz (çift maskeleme yok)."""
         with self.lock:
-            matches = self._collect(text, opts, skip=self.strong_fakes())
+            matches = self._collect(text, opts)
             out = []; i = 0
-            for s, e, v, t in matches:
-                out.append(text[i:s]); out.append(self._get_fake(v, t)); i = e
+            for s, e, v, t, p in matches:
+                out.append(text[i:s]); out.append(self._get_fake(v, t, p)); i = e
             out.append(text[i:])
             if matches: self.save()
             return "".join(out), len(matches)
 
     def analyze(self, text, opts=None):
-        """(sahte_sayısı, yeni_hassas_sayısı) — metin AI cevabı mı yoksa yeni log mu?"""
+        """(bilinen_etiket_sayısı, yeni_hassas_değer_sayısı) — metin AI cevabı mı, yeni log mu?"""
         with self.lock:
-            strong = self.strong_fakes()
-            fake_hits = 0
-            for e in self.entries:
-                f = e["fake"]
-                if f not in strong or f not in text: continue
-                lb, la = self._guard(e["type"])
-                fake_hits += len(re.findall(lb + re.escape(f) + la, text))
-            new_hits = len(self._collect(text, opts, skip=strong))
-            return fake_hits, new_hits
+            known = sum(1 for m in TOKEN_RE.finditer(text) if m.group(0) in self.tok)
+            return known, len(self._collect(text, opts))
 
     def classify(self, text, opts=None):
-        """'restore' yalnızca metinde sahteler baskınsa (AI cevabı); aksi halde 'anon' (güvenli taraf)."""
-        fake_hits, new_hits = self.analyze(text, opts)
-        kind = "restore" if fake_hits > 0 and fake_hits >= new_hits else "anon"
-        return kind, fake_hits, new_hits
+        """'restore' yalnızca metinde bilinen etiketler baskınsa (AI cevabı); aksi halde 'anon'."""
+        known, new = self.analyze(text, opts)
+        kind = "restore" if known > 0 and known >= new else "anon"
+        return kind, known, new
 
     def legacy_count(self):
-        return sum(1 for e in self.entries if _is_legacy(e["fake"]))
+        """Eski sürümün gerçekçi sahte değerleri (etiket olmayanlar)."""
+        return sum(1 for e in self.entries if not is_token(e["fake"]))
 
     def _guard(self, typ):
         if typ == "ipv4": return (r"(?<![0-9.])", r"(?![0-9.])")
@@ -353,13 +430,38 @@ class Mapper:
 
     def restore(self, text):
         with self.lock:
-            count = 0
-            for p in sorted(self.entries, key=lambda x: -len(x["fake"])):
+            count = [0]
+            def sub(m):
+                real = self.tok.get(m.group(0))
+                if real is None: return m.group(0)
+                count[0] += 1; return real
+            text = TOKEN_RE.sub(sub, text)
+            # eski sürümden kalan gerçekçi sahteler (geriye dönük uyumluluk)
+            for p in sorted((e for e in self.entries if not is_token(e["fake"])), key=lambda x: -len(x["fake"])):
                 lb, la = self._guard(p["type"])
-                pat = re.compile(lb + re.escape(p["fake"]) + la)
-                new, n = pat.subn(p["real"], text)
-                if n: count += n; text = new
-            return text, count
+                text, n = re.subn(lb + re.escape(p["fake"]) + la, lambda _m, r=p["real"]: r, text)
+                count[0] += n
+            return text, count[0]
+
+    def import_entries(self, items):
+        """Dışa aktarılmış defteri ekler. Çakışan etiketler atlanır. Dönüş: eklenen sayısı."""
+        added = 0
+        with self.lock:
+            for e in items:
+                real, fake = e.get("real"), e.get("fake")
+                if not real or not fake or e.get("secret") or real in self.real_to_fake or fake in self.tok:
+                    continue
+                self.real_to_fake[real] = fake; self.tok[fake] = real
+                self.entries.append({"real": real, "fake": fake, "type": e.get("type", "custom")})
+                m = re.match(r"([A-Z0-9]+)_(\d+)$", fake)
+                if m and is_token(fake):
+                    self.counters[m.group(1)] = max(self.counters.get(m.group(1), 0), int(m.group(2)))
+                added += 1
+            self.save()
+        return added
+
+    def export_entries(self):
+        return [e for e in self.entries if not e.get("secret")]
 
     def set_custom(self, terms):
         with self.lock:
@@ -368,9 +470,8 @@ class Mapper:
     def save(self):
         try:
             with open(STORE, "w", encoding="utf-8") as f:
-                json.dump({"entries": self.entries, "base_map": self.base_map,
-                           "label_map": self.label_map, "custom_terms": self.custom_terms}, f,
-                          ensure_ascii=False, indent=1)
+                json.dump({"version": 2, "entries": self.export_entries(), "counters": self.counters,
+                           "custom_terms": self.custom_terms}, f, ensure_ascii=False, indent=1)
         except Exception as ex:
             print("Kaydetme hatası:", ex)
 
@@ -378,20 +479,22 @@ class Mapper:
         if not os.path.exists(STORE): return
         try:
             with open(STORE, encoding="utf-8") as f: d = json.load(f)
-            self.entries = d.get("entries", [])
-            self.base_map = d.get("base_map", {}); self.label_map = d.get("label_map", {})
             self.custom_terms = d.get("custom_terms", [])
-            for e in self.entries:
-                self.real_to_fake[e["real"]] = e["fake"]; self.used_fakes.add(e["fake"])
-            self.used_bases = set(self.base_map.values()); self.used_labels = set(self.label_map.values())
+            self.counters = {k: int(v) for k, v in d.get("counters", {}).items()}
+            for e in d.get("entries", []):
+                if e.get("secret") or not e.get("real") or not e.get("fake"): continue
+                self.entries.append({"real": e["real"], "fake": e["fake"], "type": e.get("type", "custom")})
+                self.real_to_fake.setdefault(e["real"], e["fake"])
+                if is_token(e["fake"]):
+                    self.tok[e["fake"]] = e["real"]
+                    p, n = e["fake"].rsplit("_", 1)
+                    self.counters[p] = max(self.counters.get(p, 0), int(n))
         except Exception as ex:
             print("Yükleme hatası:", ex)
 
     def clear(self):
         with self.lock:
-            self.entries = []; self.real_to_fake = {}; self.used_fakes = set()
-            self.base_map = {}; self.label_map = {}; self.used_bases = set(); self.used_labels = set()
-            self.save()
+            self._reset(); self.save()
 
 
 # =====================================================================
@@ -513,7 +616,7 @@ class Agent:
             self._write(restored)
             self._flash("Panoda geri çevrildi: %d değer" % n)
         else:
-            self._flash("Panoda sahte değer yok.")
+            self._flash("Panoda defterdeki etiketlerden biri yok.")
 
     def toggle_auto(self):
         self.auto = not self.auto
@@ -528,7 +631,7 @@ class Agent:
             kind, fakes, news = "anon", 0, 0
         if kind == "restore":
             out, n = self.mapper.restore(cur)
-            why = "AI cevabı algılandı (%d sahte değer)" % fakes
+            why = "AI cevabı algılandı (%d etiket)" % fakes
         else:
             out, n = self.mapper.anonymize(cur, opts)
             why = "log algılandı" if self.mode == "smart" else "sadece-maskele modu"
@@ -787,7 +890,8 @@ def run_gui(agent):
 
     def show_fakes(tb, text):
         set_text(tb, text)
-        highlight(tb, text, [(e["fake"], e["type"]) for e in agent.mapper.entries], "fake")
+        for m in TOKEN_RE.finditer(text):
+            tb.tag_add("fake", "1.0+%dc" % m.start(), "1.0+%dc" % m.end())
 
     def show_reals(tb, text):
         set_text(tb, text)
@@ -933,7 +1037,7 @@ def run_gui(agent):
     chips = clear(chiprow); chips.pack(side="left")
     optvars = {}
     def make_chip(t):
-        v = tk.BooleanVar(value=True); optvars[t] = v
+        v = tk.BooleanVar(value=t not in DEFAULT_OFF); optvars[t] = v
         b = ctk.CTkButton(chips, text=LABELS[t], width=10, height=30, corner_radius=15, font=F(11, "bold"),
                           border_width=1)
         def paint():
@@ -948,7 +1052,7 @@ def run_gui(agent):
     agent.get_opts = get_opts
     custom_entry = ctk.CTkEntry(chiprow, height=32, corner_radius=9, border_width=1, border_color=BORDER,
                                 fg_color=INK, text_color=TEXT, font=F(12), width=120,
-                                placeholder_text="Özel terimler: firma adı, proje kodu…", placeholder_text_color=FAINT)
+                                placeholder_text="Özel terimler, virgülle…", placeholder_text_color=FAINT)
     custom_entry.pack(side="left", fill="x", expand=True, padx=(8, 0))
     if agent.mapper.custom_terms:
         custom_entry.insert(0, ", ".join(agent.mapper.custom_terms))
@@ -991,7 +1095,7 @@ def run_gui(agent):
     pr = pages["Geri Çevir"]
     pr.grid_columnconfigure(0, weight=1)
     pr.grid_rowconfigure(0, weight=1, uniform="io"); pr.grid_rowconfigure(2, weight=1, uniform="io")
-    rin_card, _, reply = io_card(pr, "AI cevabı", "sahte değerler içeren metin")
+    rin_card, _, reply = io_card(pr, "AI cevabı", "IP_1, HOST_1 gibi etiketler içeren metin")
     rin_card.grid(row=0, column=0, sticky="nsew")
     act2 = clear(pr); act2.grid(row=1, column=0, sticky="ew", pady=12)
     def do_restore():
@@ -999,7 +1103,7 @@ def run_gui(agent):
         if not txt.strip(): return gui.flash("Önce AI'ın cevabını yapıştır.")
         restored, n = agent.mapper.restore(txt)
         show_reals(restored_out, restored)
-        gui.flash("%d değer geri çevrildi." % n if n else "Bu metinde defterdeki sahtelerden biri yok.",
+        gui.flash("%d değer geri çevrildi." % n if n else "Bu metinde defterdeki etiketlerden biri yok.",
                   "real" if n else "info")
     def copy_restored():
         t = restored_out.get("1.0", "end-1c")
@@ -1023,7 +1127,7 @@ def run_gui(agent):
     bar = clear(pd); bar.pack(fill="x", pady=(0, 12))
     search = ctk.CTkEntry(bar, height=34, width=320, corner_radius=9, border_width=1,
                           border_color=BORDER, fg_color=INK, text_color=TEXT, font=F(12),
-                          placeholder_text="Ara: IP, alan adı, sahte değer…", placeholder_text_color=FAINT)
+                          placeholder_text="Ara: IP, alan adı, etiket (HOST_3)…", placeholder_text_color=FAINT)
     search.pack(side="left")
     ledcount = ctk.CTkLabel(bar, text="", font=F(12), text_color=FAINT); ledcount.pack(side="left", padx=12)
 
@@ -1031,17 +1135,14 @@ def run_gui(agent):
         p = filedialog.asksaveasfilename(parent=root, defaultextension=".json", initialfile="anonim-defteri.json")
         if p:
             with open(p, "w", encoding="utf-8") as f:
-                json.dump({"entries": agent.mapper.entries}, f, ensure_ascii=False, indent=1)
-            gui.flash("Defter dışa aktarıldı. Dosya gerçek değerler içerir — paylaşma.", "real")
+                json.dump({"version": 2, "entries": agent.mapper.export_entries()}, f, ensure_ascii=False, indent=1)
+            gui.flash("Defter dışa aktarıldı (parolalar hariç). Gerçek değerler içerir — paylaşma.", "real")
     def do_import():
         p = filedialog.askopenfilename(parent=root, filetypes=[("JSON", "*.json")])
         if p:
             with open(p, encoding="utf-8") as f: d = json.load(f)
-            for e in d.get("entries", []):
-                if e.get("real") and e["real"] not in agent.mapper.real_to_fake:
-                    agent.mapper.real_to_fake[e["real"]] = e["fake"]; agent.mapper.used_fakes.add(e["fake"])
-                    agent.mapper.entries.append({"real": e["real"], "fake": e["fake"], "type": e.get("type", "custom")})
-            agent.mapper.save(); gui.refresh(); gui.flash("Defter içe aktarıldı.", "ok")
+            n = agent.mapper.import_entries(d.get("entries", []))
+            gui.refresh(); gui.flash("Defter içe aktarıldı: %d yeni eşleşme." % n, "ok")
     def do_clear():
         if not agent.mapper.entries: return gui.flash("Defter zaten boş.")
         if messagebox.askyesno("Defteri sıfırla",
@@ -1065,7 +1166,7 @@ def run_gui(agent):
     style.layout("Ledger.Treeview", [("Ledger.Treeview.treearea", {"sticky": "nswe"})])
     tree_wrap = clear(led_card); tree_wrap.pack(fill="both", expand=True, padx=(12, 6), pady=10)
     tree = ttk.Treeview(tree_wrap, columns=("type", "real", "fake"), show="headings", style="Ledger.Treeview")
-    for col, title, w in (("type", "TÜR", 90), ("real", "GERÇEK", 360), ("fake", "SAHTE", 360)):
+    for col, title, w in (("type", "TÜR", 90), ("real", "GERÇEK", 360), ("fake", "ETİKET", 360)):
         tree.heading(col, text=title, anchor="w"); tree.column(col, width=w, anchor="w", stretch=(col != "type"))
     tree.tag_configure("odd", background="#141A26")
     vsb = ctk.CTkScrollbar(tree_wrap, command=tree.yview, button_color=BORDER, button_hover_color=BORDER2)
@@ -1082,10 +1183,14 @@ def run_gui(agent):
             def _():
                 q = search.get().strip().lower()
                 tree.delete(*tree.get_children())
+                def shown(e):
+                    if e.get("secret"):
+                        return "••••••••  (%d karakter · yalnızca bellekte)" % len(e["real"])
+                    return e["real"]
                 rows = [e for e in agent.mapper.entries
-                        if not q or q in e["real"].lower() or q in e["fake"].lower() or q in LABELS.get(e["type"], "").lower()]
+                        if not q or q in shown(e).lower() or q in e["fake"].lower() or q in LABELS.get(e["type"], "").lower()]
                 for i, e in enumerate(reversed(rows)):          # en yeni üstte
-                    tree.insert("", "end", values=(LABELS.get(e["type"], e["type"]), e["real"], e["fake"]),
+                    tree.insert("", "end", values=(LABELS.get(e["type"], e["type"]), shown(e), e["fake"]),
                                 tags=("odd",) if i % 2 else ())
                 total = len(agent.mapper.entries)
                 ledcount.configure(text=("%d / %d kayıt" % (len(rows), total)) if q else ("%d kayıt" % total))
@@ -1203,7 +1308,7 @@ def run_gui(agent):
         gui.flash("Hazır — bir log kopyala, maskeli hali panoya gelsin.", "ok")
     legacy = agent.mapper.legacy_count()
     if legacy:
-        gui.flash("Eski formatta %d kayıt var — Defter'den bir kez Sıfırla" % legacy, "warn")
+        gui.flash("Defterde eski biçimde %d kayıt var — yeni etiketler için Defter'den bir kez Sıfırla" % legacy, "warn")
 
     threading.Thread(target=agent.watch_loop, daemon=True).start()
     root.mainloop(); agent.stop()
